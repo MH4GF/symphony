@@ -14,3 +14,9 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   secret_key_base: String.duplicate("s", 64),
   check_origin: false,
   server: false
+
+# Existing AgentRunner integration tests drive the Codex app-server stub.
+# Production defaults to the Claude Code --bg runner (SymphonyElixir.ClaudeCode.Runner).
+if config_env() == :test do
+  config :symphony_elixir, :agent_runner_module, SymphonyElixir.Codex.AppServer
+end
