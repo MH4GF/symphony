@@ -30,7 +30,21 @@ defmodule SymphonyElixir.Workflow do
   @type loaded_workflow :: %{
           config: map(),
           prompt: String.t(),
-          prompt_template: String.t()
+          prompt_template: String.t(),
+          prompts: [prompt_variant()]
+        }
+
+  @typedoc """
+  A prompt variant for label-based routing. Selected by `WorkflowRouter` against
+  the issue labels. `:template` is the rendered prompt body; `:handoff_state` is
+  the workflow's desired terminal Linear state when work succeeds (informational
+  for the agent prompt and for future orchestrator wiring).
+  """
+  @type prompt_variant :: %{
+          name: String.t(),
+          match_labels: [String.t()],
+          template: String.t(),
+          handoff_state: String.t() | nil
         }
 
   @spec current() :: {:ok, loaded_workflow()} | {:error, term()}
@@ -66,12 +80,14 @@ defmodule SymphonyElixir.Workflow do
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
         prompt = Enum.join(prompt_lines, "\n") |> String.trim()
+        prompts = extract_prompts(front_matter)
 
         {:ok,
          %{
            config: front_matter,
            prompt: prompt,
-           prompt_template: prompt
+           prompt_template: prompt,
+           prompts: prompts
          }}
 
       {:error, :workflow_front_matter_not_a_map} ->
@@ -81,6 +97,37 @@ defmodule SymphonyElixir.Workflow do
         {:error, {:workflow_parse_error, reason}}
     end
   end
+
+  # `prompts:` is an optional frontmatter list (SPEC extension; unknown keys are
+  # ignored by the config schema). Each entry has `name`, `match_labels`,
+  # `template`, and an optional `handoff_state`.
+  defp extract_prompts(%{"prompts" => list}) when is_list(list) do
+    Enum.flat_map(list, &normalize_prompt_entry/1)
+  end
+
+  defp extract_prompts(_), do: []
+
+  defp normalize_prompt_entry(%{"template" => template} = entry) when is_binary(template) do
+    [
+      %{
+        name: to_string(Map.get(entry, "name", "")),
+        match_labels: list_of_strings(Map.get(entry, "match_labels", [])),
+        template: template,
+        handoff_state: nilable_string(Map.get(entry, "handoff_state"))
+      }
+    ]
+  end
+
+  defp normalize_prompt_entry(_), do: []
+
+  defp list_of_strings(list) when is_list(list) do
+    Enum.filter(list, &is_binary/1)
+  end
+
+  defp list_of_strings(_), do: []
+
+  defp nilable_string(s) when is_binary(s), do: s
+  defp nilable_string(_), do: nil
 
   defp split_front_matter(content) do
     lines = String.split(content, ~r/\R/, trim: false)

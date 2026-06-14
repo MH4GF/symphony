@@ -3,32 +3,51 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{Config, Workflow, WorkflowRouter}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
-    template =
-      Workflow.current()
-      |> prompt_template!()
-      |> parse_template!()
+    {template_body, variant} = select_template(Workflow.current(), issue)
 
-    template
+    template_body
+    |> parse_template!()
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "workflow" => variant_to_solid(variant)
       },
       @render_opts
     )
     |> IO.iodata_to_binary()
   end
 
-  defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
+  defp select_template({:ok, %{prompts: prompts} = workflow}, issue) when is_list(prompts) and prompts != [] do
+    default = %{name: "default", match_labels: [], template: default_template(workflow), handoff_state: nil}
+    variant = WorkflowRouter.select(issue, prompts, default)
+    {variant.template, variant}
+  end
 
-  defp prompt_template!({:error, reason}) do
+  defp select_template({:ok, workflow}, _issue) do
+    {default_template(workflow), nil}
+  end
+
+  defp select_template({:error, reason}, _issue) do
     raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
+  end
+
+  defp default_template(%{prompt_template: prompt}), do: default_prompt(prompt)
+
+  defp variant_to_solid(nil), do: %{"name" => "", "handoff_state" => nil, "match_labels" => []}
+
+  defp variant_to_solid(%{} = variant) do
+    %{
+      "name" => Map.get(variant, :name, ""),
+      "handoff_state" => Map.get(variant, :handoff_state),
+      "match_labels" => Map.get(variant, :match_labels, [])
+    }
   end
 
   defp parse_template!(prompt) when is_binary(prompt) do
