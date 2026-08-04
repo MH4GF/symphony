@@ -162,6 +162,36 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+### Review watch
+
+Symphony stops polling an issue once the agent parks it in a review state, so a pull request that
+starts conflicting after that point stays unmergeable until a human notices. `review_watch` closes
+that gap:
+
+```yaml
+review_watch:
+  enabled: true
+  states:
+    - Human Review
+  on_conflict_state: In Progress
+  interval_ms: 600000
+```
+
+On each interval Symphony reads the pull request behind every review-state issue that carries the
+required labels, and when GitHub reports a conflict it comments on the issue and moves it to
+`on_conflict_state`. The regular dispatch loop then resumes the agent in its existing workspace.
+
+Notes:
+
+- Disabled by default. When enabled, `states` and `on_conflict_state` are required.
+- The pull request is resolved by running `gh pr view` inside the issue workspace, so the `gh` CLI
+  must be installed and authenticated for the user running Symphony. Issues whose workspace no
+  longer exists are skipped.
+- Issues with a running agent are skipped, and a review-state issue is returned at most once per
+  head commit, so an agent that cannot resolve the conflict does not loop.
+- Workspaces on a remote `worker.ssh_hosts` host are not inspected.
+- `review_watch.command_timeout_ms` caps each `gh` invocation. Default: `30000`.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:
