@@ -31,6 +31,19 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc """
+  Resolves the local workspace path an issue identifier maps to.
+
+  The path is returned whether or not it exists, so callers that only read an
+  existing workspace can check for it without creating one.
+  """
+  @spec local_path_for_issue(String.t()) :: {:ok, Path.t()} | {:error, term()}
+  def local_path_for_issue(identifier) when is_binary(identifier) do
+    identifier
+    |> safe_identifier()
+    |> workspace_path_for_issue(nil)
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->

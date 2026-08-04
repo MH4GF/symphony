@@ -123,6 +123,11 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          review_watch_enabled: false,
+          review_watch_states: ["In Review"],
+          review_watch_on_conflict_state: "In Progress",
+          review_watch_interval_ms: 600_000,
+          review_watch_command_timeout_ms: 30_000,
           server_port: nil,
           server_host: nil,
           prompt: @workflow_prompt
@@ -161,6 +166,11 @@ defmodule SymphonyElixir.TestSupport do
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    review_watch_enabled = Keyword.get(config, :review_watch_enabled)
+    review_watch_states = Keyword.get(config, :review_watch_states)
+    review_watch_on_conflict_state = Keyword.get(config, :review_watch_on_conflict_state)
+    review_watch_interval_ms = Keyword.get(config, :review_watch_interval_ms)
+    review_watch_command_timeout_ms = Keyword.get(config, :review_watch_command_timeout_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     prompt = Keyword.get(config, :prompt)
@@ -197,6 +207,13 @@ defmodule SymphonyElixir.TestSupport do
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
+        review_watch_yaml(
+          review_watch_enabled,
+          review_watch_states,
+          review_watch_on_conflict_state,
+          review_watch_interval_ms,
+          review_watch_command_timeout_ms
+        ),
         server_yaml(server_port, server_host),
         "---",
         prompt
@@ -264,6 +281,22 @@ defmodule SymphonyElixir.TestSupport do
       "  dashboard_enabled: #{yaml_value(enabled)}",
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp review_watch_yaml(enabled, _states, _on_conflict_state, _interval_ms, _command_timeout_ms)
+       when enabled in [nil, false],
+       do: nil
+
+  defp review_watch_yaml(enabled, states, on_conflict_state, interval_ms, command_timeout_ms) do
+    [
+      "review_watch:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  states: #{yaml_value(states)}",
+      "  on_conflict_state: #{yaml_value(on_conflict_state)}",
+      "  interval_ms: #{yaml_value(interval_ms)}",
+      "  command_timeout_ms: #{yaml_value(command_timeout_ms)}"
     ]
     |> Enum.join("\n")
   end
