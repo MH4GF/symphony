@@ -38,9 +38,13 @@ defmodule SymphonyElixir.Tracker do
 
   @spec adapter() :: module()
   def adapter do
-    case Config.settings!().tracker.kind do
+    kind = Config.settings!().tracker.kind
+
+    case kind do
       "memory" -> SymphonyElixir.Tracker.Memory
-      _ -> SymphonyElixir.Linear.Adapter
+      "github" -> SymphonyElixir.Tracker.GitHub.Adapter
+      "linear" -> SymphonyElixir.Linear.Adapter
+      _ -> raise ArgumentError, message: "Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}"
     end
   end
 end

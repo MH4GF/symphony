@@ -49,6 +49,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:repo, :string)
+      field(:token, :string)
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
@@ -60,7 +62,18 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :repo,
+          :token,
+          :assignee,
+          :required_labels,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
       |> update_change(:required_labels, fn labels ->
@@ -415,7 +428,9 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+        token: resolve_secret_setting(settings.tracker.token, System.get_env("GITHUB_TOKEN")),
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        endpoint: resolve_tracker_endpoint(settings.tracker.kind, settings.tracker.endpoint)
     }
 
     workspace = %{
@@ -431,6 +446,13 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  @linear_default_endpoint "https://api.linear.app/graphql"
+  @github_default_endpoint "https://api.github.com"
+
+  defp resolve_tracker_endpoint("github", @linear_default_endpoint), do: @github_default_endpoint
+  defp resolve_tracker_endpoint("github", nil), do: @github_default_endpoint
+  defp resolve_tracker_endpoint(_kind, endpoint), do: endpoint
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
