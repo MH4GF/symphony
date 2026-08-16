@@ -13,40 +13,44 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls the configured issue tracker for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
+On the Linear tracker, app-server sessions also get a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a state listed in `tracker.terminal_states`, Symphony stops the active
+agent for that issue and cleans up matching workspaces.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-Linear issue can become a dispatch candidate again after restart.
+issue can become a dispatch candidate again after restart.
 
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+2. Give Symphony credentials for your tracker.
+   - Linear: create a personal token via Settings → Security & access → Personal API keys, and set
+     it as the `LINEAR_API_KEY` environment variable.
+   - GitHub: set `GITHUB_TOKEN`, or install a token helper at `~/.hermes/bin/gh-app-token` (override
+     the path with `SYMPHONY_GH_TOKEN_HELPER`). A helper suits long-running hosts because GitHub App
+     installation tokens expire hourly. See the GitHub tracker section below.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+4. Optionally copy the `commit`, `push`, `pull`, and `land` skills to your repo.
+   - On Linear you can also copy the `linear` skill, which expects Symphony's `linear_graphql`
+     app-server tool for raw GraphQL operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+   - Linear: to get your project's slug, right-click the project and copy its URL. The slug is part
+     of the URL. This workflow depends on non-standard Linear issue statuses ("Rework",
+     "Human Review", and "Merging"), which you can add in Team Settings → Workflow.
+   - GitHub: set `tracker.repo` to `owner/name` and create the `status:*` labels that your state
+     names map to. Routing needs nothing else, because the repository itself selects the workflow.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -107,7 +111,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
