@@ -228,6 +228,11 @@ Notes:
 - The pull request is resolved by running `gh pr view` inside the issue workspace, so the `gh` CLI
   must be installed and authenticated for the user running Symphony. Issues whose workspace no
   longer exists are skipped.
+- Keep every state listed in `states` out of `tracker.terminal_states`. Symphony sweeps the
+  workspaces of all terminal-state issues at startup, so a review state that is also terminal loses
+  its workspace on the next restart, and every issue parked in it is skipped from then on. The
+  sweep logs nothing on success, so the watcher goes quiet rather than failing. Leaving the state
+  out of both `active_states` and `terminal_states` keeps it undispatched and keeps its workspace.
 - Issues with a running agent are skipped, and a review-state issue is returned at most once per
   head commit, so an agent that cannot resolve the conflict does not loop.
 - Workspaces on a remote `worker.ssh_hosts` host are not inspected.
