@@ -15,8 +15,7 @@ defmodule SymphonyElixir.ReviewWatcher do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitHub, Orchestrator, Tracker, Workspace}
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{Config, GitHub, Issue, Orchestrator, Tracker, Workspace}
 
   @default_interval_ms 600_000
   @conflicting "CONFLICTING"

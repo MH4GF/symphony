@@ -115,6 +115,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `tracker.kind` selects the adapter: `linear`, `github`, or `memory`. An
+  unsupported value is rejected at config validation instead of falling back.
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
@@ -139,6 +141,7 @@ Notes:
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.token` reads from `GITHUB_TOKEN` the same way.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -161,6 +164,44 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+
+### GitHub tracker
+
+```yaml
+tracker:
+  kind: github
+  repo: your-org/your-repo
+  token: $GITHUB_TOKEN
+  active_states: ["Todo", "In Progress", "Merging", "Rework"]
+  terminal_states: ["Done", "Canceled"]
+```
+
+State lives on the issue itself rather than in a separate tracker field:
+
+| State | GitHub representation |
+| --- | --- |
+| non-terminal | open, plus one `status:<slug>` label derived from the state name |
+| `Done` | closed with `state_reason: completed` |
+| `Canceled` | closed with `state_reason: not_planned` |
+| `Backlog` | open with no `status:*` label |
+
+- `tracker.repo` is required and must read `owner/name`. `tracker.project_slug` and
+  `tracker.required_labels` go unused: an issue belongs to a repository, so routing needs no label.
+- State names map to labels by lowercasing and replacing runs of non-alphanumeric characters with
+  `-`, so `In Progress` reads and writes `status:in-progress`.
+- Writes send the full label list carrying exactly one `status:*` entry. GitHub replaces the label
+  set wholesale, which makes a transition a single atomic request.
+- When an issue carries several `status:*` labels, the first match wins, in `active_states` then
+  `terminal_states` then `review_watch` order.
+- `priority:1` through `priority:4` labels feed dispatch ordering. Issues without one sort behind
+  those with one, by creation time.
+- GitHub has no issue relation matching Linear's blocking, so `blocked_by` is always empty and
+  blocking never defers a dispatch. Park dependent issues in `Backlog` instead.
+- `tracker.token` falls back to `$GITHUB_TOKEN`, then to a token helper at
+  `~/.hermes/bin/gh-app-token` (override with `$SYMPHONY_GH_TOKEN_HELPER`). Long-running hosts need
+  the helper because GitHub App installation tokens expire hourly.
+- Candidate issues come from listing open issues and filtering locally, not from the search API,
+  whose indexing lags writes by more than the dispatch loop tolerates.
 
 ### Review watch
 

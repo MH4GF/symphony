@@ -1,17 +1,17 @@
 defmodule SymphonyElixir.WorkflowRouter do
   @moduledoc """
-  Selects a workflow definition for an issue by Linear label.
+  Selects a workflow definition for an issue by label.
 
   Each workflow declares `:match_labels`. An issue routes to the first workflow
   whose match labels are all present on the issue (case- and whitespace-
   insensitive). If no workflow matches, the supplied default is returned.
 
-  Linear's normalized issue carries labels but not team/project, so routing is
+  The normalized issue carries labels but not team/project, so routing is
   label-based. A workflow with empty `:match_labels` never auto-matches; it is
   only usable as the explicit default (e.g. the code workflow).
   """
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Issue
 
   @doc """
   Return the first workflow whose `:match_labels` are all present on the issue,
