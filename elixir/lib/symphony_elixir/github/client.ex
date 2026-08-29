@@ -107,14 +107,25 @@ defmodule SymphonyElixir.GitHub.Client do
   defp fetch_issues_by_states(state_names, tracker_settings, request_fun, known_states) do
     normalized_states = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
 
-    case github_state_query(state_names) do
-      nil ->
+    case github_state_queries(state_names) do
+      [] ->
         {:ok, []}
 
-      state_query ->
+      state_queries ->
         with {:ok, github_settings} <- settings(tracker_settings) do
-          do_fetch_pages(github_settings, state_query, normalized_states, 1, request_fun, known_states, [])
+          fetch_state_queries(state_queries, github_settings, normalized_states, request_fun, known_states, [])
         end
+    end
+  end
+
+  defp fetch_state_queries([], _settings, _requested_states, _request_fun, _known_states, acc) do
+    {:ok, acc |> Enum.reverse() |> List.flatten()}
+  end
+
+  defp fetch_state_queries([state_query | rest], settings, requested_states, request_fun, known_states, acc) do
+    with {:ok, issues} <-
+           do_fetch_pages(settings, state_query, requested_states, 1, request_fun, known_states, []) do
+      fetch_state_queries(rest, settings, requested_states, request_fun, known_states, [issues | acc])
     end
   end
 
@@ -163,7 +174,7 @@ defmodule SymphonyElixir.GitHub.Client do
     %{"state" => "open", "per_page" => @page_size, "page" => page, "sort" => "created", "direction" => "asc"}
   end
 
-  defp page_params(state_query, page) do
+  defp page_params("closed" = state_query, page) do
     since =
       DateTime.utc_now()
       |> DateTime.add(-@closed_lookback_seconds, :second)
@@ -462,16 +473,12 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   # Terminal workflow states live on closed issues; every other state keeps the
-  # issue open, so the requested names decide which GitHub state to ask for.
-  defp github_state_query(state_names) do
+  # issue open. Asking for each GitHub state separately keeps the closed-issue
+  # lookback window off the open ones, which have no age bound.
+  defp github_state_queries(state_names) do
     {terminal, active} = Enum.split_with(state_names, &StatusLabels.terminal_state?(trim_state(&1)))
 
-    cond do
-      terminal != [] and active != [] -> "all"
-      active != [] -> "open"
-      terminal != [] -> "closed"
-      true -> nil
-    end
+    Enum.reject([if(active != [], do: "open"), if(terminal != [], do: "closed")], &is_nil/1)
   end
 
   defp trim_state(state) when is_binary(state), do: String.trim(state)

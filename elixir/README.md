@@ -287,7 +287,9 @@ tracker:
   `terminal_states` then `review_watch` order. A `status:*` label outside those lists reads back as
   its deslugged name rather than as `Backlog`.
 - `priority:1` through `priority:4` labels map to `issue.priority`.
-- Terminal-state reads only look back 30 days, since closed issues accumulate without bound.
+- Terminal-state reads only look back 30 days, since closed issues accumulate without bound. A read
+  that mixes active and terminal states issues one request per GitHub state, so the lookback never
+  reaches open issues.
 - Reads and identity: polling is scoped to the configured repository; `issue.id` is the
   repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.

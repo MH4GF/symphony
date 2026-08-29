@@ -235,13 +235,20 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert {:ok, _since, _offset} = DateTime.from_iso8601(since)
   end
 
-  test "mixing active and terminal states asks GitHub for every issue state" do
+  test "mixing active and terminal states reads open and closed separately" do
     request_fun = fn "GET", "/repos/octo/repo/issues", params, nil, _settings ->
-      send(self(), {:github_all_page, params})
-      {:ok, %{status: 200, body: []}}
+      send(self(), {:github_mixed_page, params})
+
+      body =
+        case params["state"] do
+          "open" -> [raw_issue(1)]
+          "closed" -> [Map.merge(raw_issue(2), %{"state" => "closed"})]
+        end
+
+      {:ok, %{status: 200, body: body}}
     end
 
-    assert {:ok, []} =
+    assert {:ok, issues} =
              GitHubClient.fetch_issues_by_states_for_test(
                ["Todo", "Done"],
                tracker_settings(),
@@ -249,7 +256,12 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
                known_states()
              )
 
-    assert_receive {:github_all_page, %{"state" => "all"}}
+    assert Enum.map(issues, & &1.state) == ["Todo", "Done"]
+
+    # The lookback window must not reach the open pass, which has no age bound.
+    assert_receive {:github_mixed_page, %{"state" => "open"} = open_params}
+    refute Map.has_key?(open_params, "since")
+    assert_receive {:github_mixed_page, %{"state" => "closed", "since" => _since}}
   end
 
   test "client refreshes numeric IDs in order, omits 404s, and rejects malformed refreshes" do
