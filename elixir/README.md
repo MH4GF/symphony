@@ -53,8 +53,9 @@ tracker issue can become a dispatch candidate again after restart.
    - Linear: to get your project's slug, right-click the project and copy its URL. The slug is part
      of the URL. This workflow depends on non-standard Linear issue statuses ("Rework",
      "Human Review", and "Merging"), which you can add in Team Settings → Workflow.
-   - GitHub: set `tracker.repo` to `owner/name` and create the `status:*` labels that your state
-     names map to. Routing needs nothing else, because the repository itself selects the workflow.
+   - GitHub: set `tracker.provider.repo` to `owner/name` and create the `status:*` labels that your
+     state names map to. Routing needs nothing else, because the repository itself selects the
+     workflow.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -248,17 +249,60 @@ codex:
 
 ### GitHub Issues adapter
 
+> This fork diverges from upstream here. Upstream accepts only GitHub's native `open` and `closed`
+> as tracker states; this fork carries the full workflow lifecycle in `status:*` labels so states
+> such as `Human Review` and `Merging` survive an orchestrator restart. Everything else follows
+> upstream.
+
 - Config: use `tracker.kind: github` with required `tracker.provider.repo` in `owner/repo` form,
   optional `token` (defaults to `GITHUB_TOKEN` and accepts `$VAR`), and optional `api_url`
-  (default `https://api.github.com`, HTTPS only). Set explicit `active_states` and
-  `terminal_states`; active entries may be `open` and terminal entries may be `closed`.
+  (default `https://api.github.com`, HTTPS only). `active_states` and `terminal_states` take
+  workflow state names, not `open`/`closed`.
+
+```yaml
+tracker:
+  kind: github
+  provider:
+    repo: your-org/your-repo
+    token: $GITHUB_TOKEN
+  active_states: ["Todo", "In Progress", "Merging", "Rework"]
+  terminal_states: ["Done", "Canceled"]
+```
+
+- State representation: state lives on the issue itself rather than in a separate tracker field.
+
+  | State | GitHub representation |
+  | --- | --- |
+  | non-terminal | open, plus one `status:<slug>` label derived from the state name |
+  | `Done` | closed with `state_reason: completed` |
+  | `Canceled` | closed with `state_reason: not_planned` |
+  | `Backlog` | open with no `status:*` label |
+
+- State names map to labels by lowercasing and replacing runs of non-alphanumeric characters with
+  `-`, so `In Progress` reads and writes `status:in-progress`. Create the labels your state names
+  map to before pointing Symphony at a repository.
+- Only `Done` and `Canceled` map to a closed issue. Any other name in `terminal_states` stops
+  dispatch but is never read back from closed issues.
+- When an issue carries several `status:*` labels the first match wins, in `active_states` then
+  `terminal_states` then `review_watch` order. A `status:*` label outside those lists reads back as
+  its deslugged name rather than as `Backlog`.
+- `priority:1` through `priority:4` labels map to `issue.priority`.
+- Terminal-state reads only look back 30 days, since closed issues accumulate without bound.
 - Reads and identity: polling is scoped to the configured repository; `issue.id` is the
   repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
+  `issue.branch_name` is not generated, so the agent names its own branch.
+- GitHub has no issue relation matching Linear's blocking, so `blocked_by` is always empty and
+  blocking never defers a dispatch. Park dependent issues in `Backlog` instead.
+- Auth: `tracker.provider.token` falls back to `GITHUB_TOKEN`, then to a token helper at
+  `~/.hermes/bin/gh-app-token` (override with `$SYMPHONY_GH_TOKEN_HELPER`). Long-running hosts need
+  the helper because GitHub App installation tokens expire hourly; a minted token is cached for
+  45 minutes.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
   `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
   credentials and provider authentication aliases from the Codex child, and leaves raw tool access
-  limited by that token's GitHub permissions.
+  limited by that token's GitHub permissions. Agents move an issue between states by swapping its
+  `status:*` label through this tool.
 
 ### Jira Cloud adapter
 
@@ -313,6 +357,10 @@ required labels, and when GitHub reports a conflict it comments on the issue and
 Notes:
 
 - Disabled by default. When enabled, `states` and `on_conflict_state` are required.
+- Requires `tracker.kind: github`. The generic tracker interface is read-only — agents mutate their
+  tracker through provider-native tools — so the watcher writes through a GitHub-only host-side
+  path. Enabling it on another tracker logs a missing-repo error on each conflict return instead of
+  moving the issue.
 - The pull request is resolved by running `gh pr view` inside the issue workspace, so the `gh` CLI
   must be installed and authenticated for the user running Symphony. Issues whose workspace no
   longer exists are skipped.
@@ -325,6 +373,26 @@ Notes:
   head commit, so an agent that cannot resolve the conflict does not loop.
 - Workspaces on a remote `worker.ssh_hosts` host are not inspected.
 - `review_watch.command_timeout_ms` caps each `gh` invocation. Default: `30000`.
+
+### Migrating from the fork's pre-sync GitHub tracker
+
+Symphony's GitHub tracker used to take flat `tracker.repo`, `tracker.token`, and `tracker.endpoint`
+settings and identify issues as `#<number>`. Both changed when this fork adopted upstream's tracker
+interface:
+
+```yaml
+# before                      # after
+tracker:                      tracker:
+  kind: github                  kind: github
+  repo: owner/name              provider:
+  token: $GITHUB_TOKEN            repo: owner/name
+  endpoint: https://api.github.com token: $GITHUB_TOKEN
+                                  api_url: https://api.github.com
+```
+
+`issue.identifier` is now `GH-<number>` rather than `#<number>`. Workspace directories are named
+after the identifier, so existing `#<number>` workspaces are orphaned by the change. Stop Symphony,
+remove the stale directories under `workspace.root`, and let it recreate them on the next dispatch.
 
 ## Web dashboard
 
