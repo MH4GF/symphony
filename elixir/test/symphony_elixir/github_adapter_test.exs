@@ -429,6 +429,65 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert non_json_body["output"] =~ "#PID"
   end
 
+  test "a token helper supplies the token when neither config nor GITHUB_TOKEN does" do
+    helper_root = Path.join(System.tmp_dir!(), "symphony-gh-token-helper-#{System.unique_integer([:positive])}")
+    helper = Path.join(helper_root, "gh-app-token")
+    previous_helper = System.get_env("SYMPHONY_GH_TOKEN_HELPER")
+    previous_token = System.get_env("GITHUB_TOKEN")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_GH_TOKEN_HELPER", previous_helper)
+      restore_env("GITHUB_TOKEN", previous_token)
+      GitHubClient.reset_token_cache_for_test()
+      File.rm_rf(helper_root)
+    end)
+
+    System.delete_env("GITHUB_TOKEN")
+    GitHubClient.reset_token_cache_for_test()
+    settings = %{tracker_settings() | provider: Map.delete(tracker_settings().provider, "token")}
+
+    System.put_env("SYMPHONY_GH_TOKEN_HELPER", helper)
+    assert {:error, :missing_github_token} = GitHubClient.validate_settings(settings)
+
+    File.mkdir_p!(helper_root)
+    File.write!(helper, "#!/bin/sh\nprintf 'helper-token\\n'\n")
+    File.chmod!(helper, 0o755)
+
+    assert :ok = GitHubClient.validate_settings(settings)
+    assert {:ok, "helper-token"} = GitHubClient.token_for_test(settings)
+
+    # The minted token is cached, so removing the helper does not break reads.
+    File.rm_rf!(helper_root)
+    assert {:ok, "helper-token"} = GitHubClient.token_for_test(settings)
+  end
+
+  test "a failing token helper surfaces its exit status" do
+    helper_root = Path.join(System.tmp_dir!(), "symphony-gh-token-helper-fail-#{System.unique_integer([:positive])}")
+    helper = Path.join(helper_root, "gh-app-token")
+    previous_helper = System.get_env("SYMPHONY_GH_TOKEN_HELPER")
+    previous_token = System.get_env("GITHUB_TOKEN")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_GH_TOKEN_HELPER", previous_helper)
+      restore_env("GITHUB_TOKEN", previous_token)
+      GitHubClient.reset_token_cache_for_test()
+      File.rm_rf(helper_root)
+    end)
+
+    System.delete_env("GITHUB_TOKEN")
+    GitHubClient.reset_token_cache_for_test()
+    System.put_env("SYMPHONY_GH_TOKEN_HELPER", helper)
+
+    File.mkdir_p!(helper_root)
+    File.write!(helper, "#!/bin/sh\nprintf 'boom\\n' >&2\nexit 3\n")
+    File.chmod!(helper, 0o755)
+
+    settings = %{tracker_settings() | provider: Map.delete(tracker_settings().provider, "token")}
+
+    assert {:error, {:github_token_helper_failed, 3, output}} = GitHubClient.validate_settings(settings)
+    assert output =~ "boom"
+  end
+
   test "tracker binds GitHub tools and token env names from provider config" do
     token_env = "SYMPHONY_GITHUB_TOKEN_#{System.unique_integer([:positive])}"
     previous_token = System.get_env(token_env)

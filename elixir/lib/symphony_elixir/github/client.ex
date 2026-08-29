@@ -13,6 +13,8 @@ defmodule SymphonyElixir.GitHub.Client do
   @page_size 100
   @user_agent "symphony"
   @closed_lookback_seconds 30 * 24 * 60 * 60
+  @token_ttl_ms 45 * 60 * 1_000
+  @default_token_helper "~/.hermes/bin/gh-app-token"
 
   @spec validate_settings(map()) :: :ok | {:error, term()}
   def validate_settings(tracker_settings) do
@@ -63,6 +65,19 @@ defmodule SymphonyElixir.GitHub.Client do
     with {:ok, github_settings} <- settings(tracker_settings) do
       request_fun.(method, path, params, body, github_settings)
     end
+  end
+
+  @doc false
+  @spec reset_token_cache_for_test() :: :ok
+  def reset_token_cache_for_test do
+    :persistent_term.erase({__MODULE__, :token})
+    :ok
+  end
+
+  @doc false
+  @spec token_for_test(map()) :: {:ok, String.t()} | {:error, term()}
+  def token_for_test(tracker_settings) when is_map(tracker_settings) do
+    with {:ok, github_settings} <- settings(tracker_settings), do: {:ok, github_settings.token}
   end
 
   @doc false
@@ -323,11 +338,62 @@ defmodule SymphonyElixir.GitHub.Client do
     token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
 
     cond do
-      not valid_api_url?(api_url) -> {:error, :invalid_github_api_url}
-      not present_string?(repo) -> {:error, :missing_github_repo}
-      not valid_repo?(repo) -> {:error, :invalid_github_repo}
-      not present_string?(token) -> {:error, :missing_github_token}
-      true -> {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: token}}
+      not valid_api_url?(api_url) ->
+        {:error, :invalid_github_api_url}
+
+      not present_string?(repo) ->
+        {:error, :missing_github_repo}
+
+      not valid_repo?(repo) ->
+        {:error, :invalid_github_repo}
+
+      present_string?(token) ->
+        {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: token}}
+
+      true ->
+        with {:ok, helper_token} <- helper_token() do
+          {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: helper_token}}
+        end
+    end
+  end
+
+  # GitHub App installation tokens expire hourly, so a long-running host needs a
+  # helper it can re-run rather than a token baked into the workflow file.
+  defp helper_token do
+    now = System.monotonic_time(:millisecond)
+
+    case :persistent_term.get({__MODULE__, :token}, nil) do
+      {token, expires_at} when expires_at > now -> {:ok, token}
+      _expired -> mint_helper_token(now)
+    end
+  end
+
+  defp mint_helper_token(now) do
+    helper = token_helper_path()
+
+    if File.regular?(helper) do
+      run_token_helper(helper, now)
+    else
+      {:error, :missing_github_token}
+    end
+  end
+
+  defp run_token_helper(helper, now) do
+    case System.cmd(helper, [], stderr_to_stdout: true) do
+      {output, 0} ->
+        token = String.trim(output)
+        :persistent_term.put({__MODULE__, :token}, {token, now + @token_ttl_ms})
+        {:ok, token}
+
+      {output, status} ->
+        {:error, {:github_token_helper_failed, status, String.trim(output)}}
+    end
+  end
+
+  defp token_helper_path do
+    case System.get_env("SYMPHONY_GH_TOKEN_HELPER") do
+      path when is_binary(path) and path != "" -> Path.expand(path)
+      _unset -> Path.expand(@default_token_helper)
     end
   end
 
