@@ -2,10 +2,15 @@ defmodule SymphonyElixir.GitHub.LiveE2ETest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitHub.StatusLabels
 
   @moduletag :live_e2e
   @moduletag timeout: 300_000
 
+  # This fork carries workflow state in status:* labels rather than GitHub's
+  # native open/closed, so the live workflow uses workflow state names.
+  @active_states ["Todo", "In Progress"]
+  @terminal_states ["Done", "Canceled"]
   @api_url "https://api.github.com"
   @api_version "2022-11-28"
   @result_file "LIVE_GITHUB_E2E_RESULT.txt"
@@ -40,7 +45,11 @@ defmodule SymphonyElixir.GitHub.LiveE2ETest do
     expected_comment = expected_comment("GH-#{issue_number}", run_id)
 
     try do
-      assert %Issue{} = issue = GitHubClient.normalize_issue_for_test(issue_payload, repo)
+      known_states = StatusLabels.known_states(%{tracker: %{active_states: @active_states, terminal_states: @terminal_states}})
+
+      assert %Issue{} =
+               issue = GitHubClient.normalize_issue_for_test(issue_payload, repo, known_states)
+
       stop_agent_runtime_if_running(runtime_pid)
       Workflow.set_workflow_file_path(workflow_file)
 
@@ -100,8 +109,8 @@ defmodule SymphonyElixir.GitHub.LiveE2ETest do
         provider:
           repo: #{Jason.encode!(repo)}
           token: "$GITHUB_TOKEN"
-        active_states: ["open"]
-        terminal_states: ["closed"]
+        active_states: #{Jason.encode!(@active_states)}
+        terminal_states: #{Jason.encode!(@terminal_states)}
       workspace:
         root: #{Jason.encode!(workspace_root)}
       agent:
@@ -181,7 +190,7 @@ defmodule SymphonyElixir.GitHub.LiveE2ETest do
         :post,
         "/repos/#{encoded_repo(repo)}/issues",
         token,
-        %{"title" => title, "body" => body}
+        %{"title" => title, "body" => body, "labels" => [StatusLabels.status_label("Todo")]}
       )
 
     case response.body do
