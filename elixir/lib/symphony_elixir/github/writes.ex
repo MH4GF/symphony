@@ -82,9 +82,8 @@ defmodule SymphonyElixir.GitHub.Writes do
 
     case Client.request(method, path, %{}, body, request_opts) do
       {:ok, %{status: status, body: payload}} when status in 200..299 -> {:ok, payload}
-      {:ok, %{status: status}} when is_integer(status) -> {:error, {:github_api_status, status}}
+      {:ok, %{status: status}} -> {:error, {:github_api_status, status}}
       {:error, reason} -> {:error, reason}
-      _response -> {:error, :github_unknown_payload}
     end
   end
 

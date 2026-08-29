@@ -128,17 +128,11 @@ defmodule SymphonyElixir.GitHub.WritesTest do
     assert_received {:patched, %{labels: ["bug", "status:in-progress"]}}
   end
 
-  test "a transport failure and an unexpected response shape both surface as errors" do
+  test "a transport failure surfaces as an error" do
     assert {:error, :timeout} =
              Writes.create_comment("42", "body",
                tracker_settings: tracker_settings(),
                request_fun: fn _method, _path, _params, _body, _settings -> {:error, :timeout} end
-             )
-
-    assert {:error, :github_unknown_payload} =
-             Writes.create_comment("42", "body",
-               tracker_settings: tracker_settings(),
-               request_fun: fn _method, _path, _params, _body, _settings -> :garbage end
              )
   end
 
