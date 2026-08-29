@@ -4,6 +4,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.GitHub.AgentTool, as: GitHubAgentTool
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitHub.StatusLabels
 
   defmodule FakeGitHubClient do
     def fetch_issues_by_states(states) do
@@ -44,22 +45,24 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert :ok = GitHubAdapter.validate_config(%{settings | active_states: [], terminal_states: []})
 
-    assert {:error, :invalid_github_states} =
-             GitHubAdapter.validate_config(%{settings | active_states: ["Todo"]})
+    # States are carried by status:* labels, so any workflow state name is valid.
+    assert :ok =
+             GitHubAdapter.validate_config(%{
+               settings
+               | active_states: ["Todo", "In Progress", "Human Review"],
+                 terminal_states: ["Done", "Canceled"]
+             })
 
     assert {:error, :invalid_github_states} =
              GitHubAdapter.validate_config(%{settings | active_states: [42]})
 
     assert {:error, :invalid_github_states} =
-             GitHubAdapter.validate_config(%{settings | active_states: ["closed"]})
-
-    assert {:error, :invalid_github_states} =
-             GitHubAdapter.validate_config(%{settings | terminal_states: ["open"]})
+             GitHubAdapter.validate_config(%{settings | terminal_states: ["Done", nil]})
 
     Application.put_env(:symphony_elixir, :github_client_module, FakeGitHubClient)
 
-    assert {:ok, ["open"]} = GitHubAdapter.fetch_issues_by_states(["open"])
-    assert_receive {:github_states_called, ["open"]}
+    assert {:ok, ["Todo"]} = GitHubAdapter.fetch_issues_by_states(["Todo"])
+    assert_receive {:github_states_called, ["Todo"]}
 
     assert {:ok, ["42"]} = GitHubAdapter.fetch_issues_by_ids(["42"])
     assert_receive {:github_ids_called, ["42"]}
@@ -103,7 +106,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
   end
 
   test "client normalizes GitHub issues without dropping provider details" do
-    issue = GitHubClient.normalize_issue_for_test(raw_issue(42), "octo/repo")
+    issue = GitHubClient.normalize_issue_for_test(raw_issue(42), "octo/repo", known_states())
 
     assert issue.id == "42"
     assert issue.identifier == "GH-42"
@@ -117,10 +120,11 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert issue.title == "Issue 42"
     assert issue.description == "Body 42"
-    assert issue.state == "open"
+    assert issue.state == "Todo"
+    assert issue.priority == 2
     assert issue.url == "https://github.test/octo/repo/issues/42"
     assert issue.assignee_id == "octocat"
-    assert issue.labels == ["bug", "platform"]
+    assert issue.labels == ["bug", "platform", "status:todo", "priority:2"]
     assert issue.blocked_by == []
     assert issue.dispatchable
     assert %DateTime{} = issue.created_at
@@ -128,13 +132,26 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     refute GitHubClient.normalize_issue_for_test(
              Map.put(raw_issue(43), "pull_request", %{"url" => "https://api.github.test/pulls/43"}),
-             "octo/repo"
+             "octo/repo",
+             known_states()
            ).dispatchable
 
     assert GitHubClient.normalize_issue_for_test(
              Map.put(raw_issue(44), "title", " "),
-             "octo/repo"
+             "octo/repo",
+             known_states()
            ) == nil
+  end
+
+  test "a closed issue takes its state from state_reason, and an unlabelled open issue reads as Backlog" do
+    closed = Map.merge(raw_issue(45), %{"state" => "closed", "state_reason" => "not_planned"})
+    assert GitHubClient.normalize_issue_for_test(closed, "octo/repo", known_states()).state == "Canceled"
+
+    completed = Map.merge(raw_issue(46), %{"state" => "closed"})
+    assert GitHubClient.normalize_issue_for_test(completed, "octo/repo", known_states()).state == "Done"
+
+    unlabelled = Map.put(raw_issue(47), "labels", [])
+    assert GitHubClient.normalize_issue_for_test(unlabelled, "octo/repo", known_states()).state == "Backlog"
   end
 
   test "client pages state reads, filters requested states, and drops malformed records" do
@@ -162,9 +179,10 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       capture_log(fn ->
         assert {:ok, issues} =
                  GitHubClient.fetch_issues_by_states_for_test(
-                   [" OPEN "],
+                   [" Todo "],
                    tracker_settings(),
-                   request_fun
+                   request_fun,
+                   known_states()
                  )
 
         assert length(issues) == 99
@@ -189,12 +207,49 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert {:ok, []} =
              GitHubClient.fetch_issues_by_states_for_test(
-               ["In Progress"],
+               [],
                tracker_settings(),
                fn _method, _path, _params, _body, _settings ->
-                 flunk("unsupported GitHub states should not make an HTTP request")
-               end
+                 flunk("an empty state list should not make an HTTP request")
+               end,
+               known_states()
              )
+  end
+
+  test "terminal states query closed issues within the lookback window" do
+    request_fun = fn "GET", "/repos/octo/repo/issues", params, nil, _settings ->
+      send(self(), {:github_closed_page, params})
+      {:ok, %{status: 200, body: [Map.merge(raw_issue(7), %{"state" => "closed"})]}}
+    end
+
+    assert {:ok, [issue]} =
+             GitHubClient.fetch_issues_by_states_for_test(
+               ["Done"],
+               tracker_settings(),
+               request_fun,
+               known_states()
+             )
+
+    assert issue.state == "Done"
+    assert_receive {:github_closed_page, %{"state" => "closed", "sort" => "updated", "since" => since}}
+    assert {:ok, _since, _offset} = DateTime.from_iso8601(since)
+  end
+
+  test "mixing active and terminal states asks GitHub for every issue state" do
+    request_fun = fn "GET", "/repos/octo/repo/issues", params, nil, _settings ->
+      send(self(), {:github_all_page, params})
+      {:ok, %{status: 200, body: []}}
+    end
+
+    assert {:ok, []} =
+             GitHubClient.fetch_issues_by_states_for_test(
+               ["Todo", "Done"],
+               tracker_settings(),
+               request_fun,
+               known_states()
+             )
+
+    assert_receive {:github_all_page, %{"state" => "all"}}
   end
 
   test "client refreshes numeric IDs in order, omits 404s, and rejects malformed refreshes" do
@@ -212,7 +267,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              GitHubClient.fetch_issues_by_ids_for_test(
                ["2", "1", "404", "2"],
                tracker_settings(),
-               request_fun
+               request_fun,
+               known_states()
              )
 
     assert Enum.map(issues, & &1.id) == ["2", "1"]
@@ -225,7 +281,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              GitHubClient.fetch_issues_by_ids_for_test(
                ["not-a-number"],
                tracker_settings(),
-               request_fun
+               request_fun,
+               known_states()
              )
 
     assert {:error, :github_unknown_payload} =
@@ -234,7 +291,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
                tracker_settings(),
                fn _method, _path, _params, _body, _settings ->
                  {:ok, %{status: 200, body: Map.put(raw_issue(3), "title", "")}}
-               end
+               end,
+               known_states()
              )
   end
 
@@ -407,9 +465,13 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
           },
           provider_overrides
         ),
-      active_states: ["open"],
-      terminal_states: ["closed"]
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Done", "Canceled"]
     }
+  end
+
+  defp known_states do
+    StatusLabels.known_states(%{tracker: tracker_settings()})
   end
 
   defp raw_issue(number) do
@@ -422,7 +484,13 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       "state" => "open",
       "html_url" => "https://github.test/octo/repo/issues/#{number}",
       "assignee" => %{"login" => "octocat"},
-      "labels" => [%{"name" => " Bug "}, %{"name" => "bug"}, %{"name" => "Platform"}],
+      "labels" => [
+        %{"name" => " Bug "},
+        %{"name" => "bug"},
+        %{"name" => "Platform"},
+        %{"name" => "status:todo"},
+        %{"name" => "priority:2"}
+      ],
       "created_at" => "2026-01-01T00:00:00Z",
       "updated_at" => "2026-01-02T00:00:00Z"
     }
@@ -438,8 +506,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
         provider:
           repo: "octo/repo"
           token: #{Jason.encode!(token)}
-        active_states: ["open"]
-        terminal_states: ["closed"]
+        active_states: ["Todo", "In Progress"]
+        terminal_states: ["Done", "Canceled"]
       ---
 
       You are working on {{ issue.identifier }}.

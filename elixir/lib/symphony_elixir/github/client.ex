@@ -5,12 +5,14 @@ defmodule SymphonyElixir.GitHub.Client do
 
   require Logger
   alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.StatusLabels
   alias SymphonyElixir.Tracker.Issue
 
   @default_api_url "https://api.github.com"
   @api_version "2022-11-28"
   @page_size 100
   @user_agent "symphony"
+  @closed_lookback_seconds 30 * 24 * 60 * 60
 
   @spec validate_settings(map()) :: :ok | {:error, term()}
   def validate_settings(tracker_settings) do
@@ -32,12 +34,14 @@ defmodule SymphonyElixir.GitHub.Client do
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
-    fetch_issues_by_states(state_names, Config.settings!().tracker, &perform_request/5)
+    settings = Config.settings!()
+    fetch_issues_by_states(state_names, settings.tracker, &perform_request/5, StatusLabels.known_states(settings))
   end
 
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids) when is_list(issue_ids) do
-    fetch_issues_by_ids(issue_ids, Config.settings!().tracker, &perform_request/5)
+    settings = Config.settings!()
+    fetch_issues_by_ids(issue_ids, settings.tracker, &perform_request/5, StatusLabels.known_states(settings))
   end
 
   @spec request(String.t(), String.t(), map(), term(), keyword()) ::
@@ -53,42 +57,44 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   @doc false
-  @spec normalize_issue_for_test(map(), String.t()) :: Issue.t() | nil
-  def normalize_issue_for_test(issue, repo) when is_map(issue) and is_binary(repo) do
-    normalize_issue(issue, repo)
+  @spec normalize_issue_for_test(map(), String.t(), [String.t()]) :: Issue.t() | nil
+  def normalize_issue_for_test(issue, repo, known_states)
+      when is_map(issue) and is_binary(repo) and is_list(known_states) do
+    normalize_issue(issue, repo, known_states)
   end
 
   @doc false
-  @spec fetch_issues_by_states_for_test([String.t()], map(), function()) ::
+  @spec fetch_issues_by_states_for_test([String.t()], map(), function(), [String.t()]) ::
           {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states_for_test(state_names, tracker_settings, request_fun)
-      when is_list(state_names) and is_map(tracker_settings) and is_function(request_fun, 5) do
-    fetch_issues_by_states(state_names, tracker_settings, request_fun)
+  def fetch_issues_by_states_for_test(state_names, tracker_settings, request_fun, known_states)
+      when is_list(state_names) and is_map(tracker_settings) and is_function(request_fun, 5) and
+             is_list(known_states) do
+    fetch_issues_by_states(state_names, tracker_settings, request_fun, known_states)
   end
 
   @doc false
-  @spec fetch_issues_by_ids_for_test([String.t()], map(), function()) ::
+  @spec fetch_issues_by_ids_for_test([String.t()], map(), function(), [String.t()]) ::
           {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_ids_for_test(issue_ids, tracker_settings, request_fun)
-      when is_list(issue_ids) and is_map(tracker_settings) and is_function(request_fun, 5) do
-    fetch_issues_by_ids(issue_ids, tracker_settings, request_fun)
+  def fetch_issues_by_ids_for_test(issue_ids, tracker_settings, request_fun, known_states)
+      when is_list(issue_ids) and is_map(tracker_settings) and is_function(request_fun, 5) and is_list(known_states) do
+    fetch_issues_by_ids(issue_ids, tracker_settings, request_fun, known_states)
   end
 
-  defp fetch_issues_by_states(state_names, tracker_settings, request_fun) do
+  defp fetch_issues_by_states(state_names, tracker_settings, request_fun, known_states) do
     normalized_states = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
 
-    case github_state_query(normalized_states) do
+    case github_state_query(state_names) do
       nil ->
         {:ok, []}
 
       state_query ->
         with {:ok, github_settings} <- settings(tracker_settings) do
-          do_fetch_pages(github_settings, state_query, normalized_states, 1, request_fun, [])
+          do_fetch_pages(github_settings, state_query, normalized_states, 1, request_fun, known_states, [])
         end
     end
   end
 
-  defp fetch_issues_by_ids(issue_ids, tracker_settings, request_fun) do
+  defp fetch_issues_by_ids(issue_ids, tracker_settings, request_fun, known_states) do
     ids = Enum.uniq(issue_ids)
 
     case ids do
@@ -97,19 +103,13 @@ defmodule SymphonyElixir.GitHub.Client do
 
       ids ->
         with {:ok, github_settings} <- settings(tracker_settings) do
-          fetch_issue_ids(ids, github_settings, request_fun, [])
+          fetch_issue_ids(ids, github_settings, request_fun, known_states, [])
         end
     end
   end
 
-  defp do_fetch_pages(settings, state_query, requested_states, page, request_fun, acc) do
-    params = %{
-      "state" => state_query,
-      "per_page" => @page_size,
-      "page" => page,
-      "sort" => "created",
-      "direction" => "asc"
-    }
+  defp do_fetch_pages(settings, state_query, requested_states, page, request_fun, known_states, acc) do
+    params = page_params(state_query, page)
 
     with {:ok, payload} <-
            request_with_settings(
@@ -122,20 +122,42 @@ defmodule SymphonyElixir.GitHub.Client do
              false
            ),
          true <- is_list(payload) or {:error, :github_unknown_payload} do
-      issues = normalize_state_page(payload, settings.repo, requested_states)
+      issues = normalize_state_page(payload, settings.repo, requested_states, known_states)
       updated_acc = [issues | acc]
 
       if length(payload) < @page_size do
         {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
       else
-        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
+        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, known_states, updated_acc)
       end
     end
   end
 
-  defp fetch_issue_ids([], _settings, _request_fun, acc), do: {:ok, Enum.reverse(acc)}
+  # Closed issues accumulate without bound, so a terminal-state read only looks
+  # back far enough to catch work Symphony still tracks.
+  defp page_params("open", page) do
+    %{"state" => "open", "per_page" => @page_size, "page" => page, "sort" => "created", "direction" => "asc"}
+  end
 
-  defp fetch_issue_ids([id | rest], settings, request_fun, acc) do
+  defp page_params(state_query, page) do
+    since =
+      DateTime.utc_now()
+      |> DateTime.add(-@closed_lookback_seconds, :second)
+      |> DateTime.to_iso8601()
+
+    %{
+      "state" => state_query,
+      "per_page" => @page_size,
+      "page" => page,
+      "sort" => "updated",
+      "direction" => "asc",
+      "since" => since
+    }
+  end
+
+  defp fetch_issue_ids([], _settings, _request_fun, _known_states, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp fetch_issue_ids([id | rest], settings, request_fun, known_states, acc) do
     with {:ok, issue_number} <- parse_issue_number(id),
          {:ok, payload} <-
            request_with_settings(
@@ -147,27 +169,27 @@ defmodule SymphonyElixir.GitHub.Client do
              request_fun,
              true
            ) do
-      continue_issue_id_fetch(payload, rest, settings, request_fun, acc)
+      continue_issue_id_fetch(payload, rest, settings, request_fun, known_states, acc)
     end
   end
 
-  defp continue_issue_id_fetch(:not_found, rest, settings, request_fun, acc) do
-    fetch_issue_ids(rest, settings, request_fun, acc)
+  defp continue_issue_id_fetch(:not_found, rest, settings, request_fun, known_states, acc) do
+    fetch_issue_ids(rest, settings, request_fun, known_states, acc)
   end
 
-  defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, acc) do
-    case normalize_issue(raw_issue, settings.repo) do
-      %Issue{} = issue -> fetch_issue_ids(rest, settings, request_fun, [issue | acc])
+  defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, known_states, acc) do
+    case normalize_issue(raw_issue, settings.repo, known_states) do
+      %Issue{} = issue -> fetch_issue_ids(rest, settings, request_fun, known_states, [issue | acc])
       nil -> {:error, :github_unknown_payload}
     end
   end
 
-  defp continue_issue_id_fetch(_payload, _rest, _settings, _request_fun, _acc) do
+  defp continue_issue_id_fetch(_payload, _rest, _settings, _request_fun, _known_states, _acc) do
     {:error, :github_unknown_payload}
   end
 
-  defp normalize_state_page(payload, repo, requested_states) do
-    issues = Enum.map(payload, &normalize_issue(&1, repo))
+  defp normalize_state_page(payload, repo, requested_states, known_states) do
+    issues = Enum.map(payload, &normalize_issue(&1, repo, known_states))
     malformed_count = Enum.count(issues, &is_nil/1)
 
     if malformed_count > 0 do
@@ -179,22 +201,25 @@ defmodule SymphonyElixir.GitHub.Client do
     |> Enum.filter(&MapSet.member?(requested_states, normalize_state(&1.state)))
   end
 
-  defp normalize_issue(issue, repo) when is_map(issue) and is_binary(repo) do
+  defp normalize_issue(issue, repo, known_states) when is_map(issue) and is_binary(repo) do
     issue_number = issue["number"]
     state = issue["state"]
 
     if is_integer(issue_number) and issue_number > 0 and
          Enum.all?([issue["title"], state], &present_string?/1) do
+      labels = extract_labels(issue)
+
       %Issue{
         id: Integer.to_string(issue_number),
         native_ref: native_ref(issue, repo),
         identifier: "GH-#{issue_number}",
         title: issue["title"],
         description: issue["body"],
-        state: state,
+        priority: StatusLabels.priority_from_labels(labels),
+        state: StatusLabels.resolve_state(issue, labels, known_states),
         url: issue["html_url"],
         assignee_id: get_in(issue, ["assignee", "login"]),
-        labels: extract_labels(issue),
+        labels: labels,
         blocked_by: [],
         dispatchable: not Map.has_key?(issue, "pull_request"),
         created_at: parse_datetime(issue["created_at"]),
@@ -203,7 +228,7 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp normalize_issue(_issue, _repo), do: nil
+  defp normalize_issue(_issue, _repo, _known_states), do: nil
 
   defp native_ref(issue, repo) do
     %{
@@ -361,17 +386,21 @@ defmodule SymphonyElixir.GitHub.Client do
     ]
   end
 
-  defp github_state_query(states) do
-    has_open? = MapSet.member?(states, "open")
-    has_closed? = MapSet.member?(states, "closed")
+  # Terminal workflow states live on closed issues; every other state keeps the
+  # issue open, so the requested names decide which GitHub state to ask for.
+  defp github_state_query(state_names) do
+    {terminal, active} = Enum.split_with(state_names, &StatusLabels.terminal_state?(trim_state(&1)))
 
     cond do
-      has_open? and has_closed? -> "all"
-      has_open? -> "open"
-      has_closed? -> "closed"
+      terminal != [] and active != [] -> "all"
+      active != [] -> "open"
+      terminal != [] -> "closed"
       true -> nil
     end
   end
+
+  defp trim_state(state) when is_binary(state), do: String.trim(state)
+  defp trim_state(state), do: state
 
   defp parse_issue_number(value) when is_binary(value) do
     case Integer.parse(value) do

@@ -8,23 +8,10 @@ defmodule SymphonyElixir.GitHub.Adapter do
   alias SymphonyElixir.GitHub.{AgentTool, Client}
   alias SymphonyElixir.Tracker.Issue
 
-  @active_states ["open"]
-  @terminal_states ["closed"]
-
   @spec validate_config(map()) :: :ok | {:error, term()}
   def validate_config(tracker_settings) do
-    with :ok <-
-           validate_states(
-             tracker_settings.active_states,
-             @active_states,
-             :missing_github_active_states
-           ),
-         :ok <-
-           validate_states(
-             tracker_settings.terminal_states,
-             @terminal_states,
-             :missing_github_terminal_states
-           ) do
+    with :ok <- validate_states(tracker_settings.active_states, :missing_github_active_states),
+         :ok <- validate_states(tracker_settings.terminal_states, :missing_github_terminal_states) do
       Client.validate_settings(tracker_settings)
     end
   end
@@ -48,16 +35,18 @@ defmodule SymphonyElixir.GitHub.Adapter do
     Application.get_env(:symphony_elixir, :github_client_module, Client)
   end
 
-  defp validate_states(states, allowed_states, _missing_error) when is_list(states) do
-    if Enum.all?(states, &(normalize_state(&1) in allowed_states)) do
+  # State is carried by status:* labels rather than GitHub's own open/closed, so
+  # any workflow state name is valid as long as it is a usable string.
+  defp validate_states(states, _missing_error) when is_list(states) do
+    if Enum.all?(states, &present_string?/1) do
       :ok
     else
       {:error, :invalid_github_states}
     end
   end
 
-  defp validate_states(_states, _allowed_states, missing_error), do: {:error, missing_error}
+  defp validate_states(_states, missing_error), do: {:error, missing_error}
 
-  defp normalize_state(state) when is_binary(state), do: state |> String.trim() |> String.downcase()
-  defp normalize_state(_state), do: ""
+  defp present_string?(state) when is_binary(state), do: String.trim(state) != ""
+  defp present_string?(_state), do: false
 end
