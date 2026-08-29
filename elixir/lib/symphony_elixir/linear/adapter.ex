@@ -17,9 +17,6 @@ defmodule SymphonyElixir.Linear.Adapter do
       not present_string?(tracker_settings.api_key) ->
         {:error, :missing_linear_api_token}
 
-      not present_string?(tracker_settings.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
       not is_nil(tracker_settings.assignee) and not present_string?(tracker_settings.assignee) ->
         {:error, :invalid_linear_assignee}
 
