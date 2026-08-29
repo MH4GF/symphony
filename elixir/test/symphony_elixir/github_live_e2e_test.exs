@@ -45,7 +45,8 @@ defmodule SymphonyElixir.GitHub.LiveE2ETest do
     expected_comment = expected_comment("GH-#{issue_number}", run_id)
 
     try do
-      known_states = StatusLabels.known_states(%{tracker: %{active_states: @active_states, terminal_states: @terminal_states}})
+      tracker_states = %{active_states: @active_states, terminal_states: @terminal_states}
+      known_states = StatusLabels.known_states(%{tracker: tracker_states})
 
       assert %Issue{} =
                issue = GitHubClient.normalize_issue_for_test(issue_payload, repo, known_states)
