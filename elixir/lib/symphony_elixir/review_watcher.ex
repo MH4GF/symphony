@@ -173,7 +173,7 @@ defmodule SymphonyElixir.ReviewWatcher do
   defp workspace_for(%Issue{}), do: :skip
 
   defp github_module do
-    Application.get_env(:symphony_elixir, :github_module, GitHub)
+    Application.get_env(:symphony_elixir, :github_module, GitHub.CLI)
   end
 
   defp issue_log_context(%Issue{id: id, identifier: identifier}) do
