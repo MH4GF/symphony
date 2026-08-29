@@ -44,6 +44,15 @@ defmodule SymphonyElixir.GitHub.Client do
     fetch_issues_by_ids(issue_ids, settings.tracker, &perform_request/5, StatusLabels.known_states(settings))
   end
 
+  @doc """
+  Resolves the configured `owner/name` repository for host-side callers that
+  build their own REST paths.
+  """
+  @spec repo(map()) :: {:ok, String.t()} | {:error, term()}
+  def repo(tracker_settings) when is_map(tracker_settings) do
+    with {:ok, github_settings} <- settings(tracker_settings), do: {:ok, github_settings.repo}
+  end
+
   @spec request(String.t(), String.t(), map(), term(), keyword()) ::
           {:ok, %{status: integer(), body: term()}} | {:error, term()}
   def request(method, path, params, body, opts \\ [])
