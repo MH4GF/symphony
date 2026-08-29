@@ -11,7 +11,7 @@ defmodule SymphonyElixir.WorkflowRouter do
   only usable as the explicit default (e.g. the code workflow).
   """
 
-  alias SymphonyElixir.Issue
+  alias SymphonyElixir.Tracker.Issue
 
   @doc """
   Return the first workflow whose `:match_labels` are all present on the issue,

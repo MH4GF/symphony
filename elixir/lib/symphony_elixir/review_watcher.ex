@@ -15,7 +15,8 @@ defmodule SymphonyElixir.ReviewWatcher do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitHub, Issue, Orchestrator, Tracker, Workspace}
+  alias SymphonyElixir.{Config, GitHub, Orchestrator, Tracker, Workspace}
+  alias SymphonyElixir.Tracker.Issue
 
   @default_interval_ms 600_000
   @conflicting "CONFLICTING"
@@ -134,8 +135,8 @@ defmodule SymphonyElixir.ReviewWatcher do
   defp return_issue(%Issue{} = issue, pull_request, state, review_watch) do
     target_state = review_watch.on_conflict_state
 
-    with :ok <- Tracker.create_comment(issue.id, conflict_comment(pull_request, target_state)),
-         :ok <- Tracker.update_issue_state(issue.id, target_state) do
+    with :ok <- writes_module().create_comment(issue.id, conflict_comment(pull_request, target_state)),
+         :ok <- writes_module().update_issue_state(issue.id, target_state) do
       Logger.info("Review watch returned conflicting issue #{issue_log_context(issue)} pr_number=#{pull_request.number} target_state=#{target_state}")
 
       %{state | returned_head_oids: Map.put(state.returned_head_oids, issue.id, pull_request.head_oid)}
@@ -174,6 +175,10 @@ defmodule SymphonyElixir.ReviewWatcher do
 
   defp github_module do
     Application.get_env(:symphony_elixir, :github_module, GitHub.CLI)
+  end
+
+  defp writes_module do
+    Application.get_env(:symphony_elixir, :github_writes_module, GitHub.Writes)
   end
 
   defp issue_log_context(%Issue{id: id, identifier: identifier}) do
