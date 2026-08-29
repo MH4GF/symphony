@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.GitHub.WritesTest do
-  use ExUnit.Case, async: true
+  use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.GitHub.Writes
 
@@ -99,6 +99,46 @@ defmodule SymphonyElixir.GitHub.WritesTest do
              Writes.create_comment("42", "body",
                tracker_settings: %{kind: "github", provider: %{"token" => "test-token"}},
                request_fun: fn _method, _path, _params, _body, _settings -> flunk("must not request") end
+             )
+  end
+
+  test "without explicit options the configured tracker supplies the repository" do
+    # The workflow file configured for tests has no GitHub provider, so both
+    # entry points fail before issuing a request.
+    assert {:error, :missing_github_repo} = Writes.create_comment("42", "body")
+    assert {:error, :missing_github_repo} = Writes.update_issue_state("42", "In Progress")
+  end
+
+  test "labels that are neither strings nor named maps are dropped" do
+    test_pid = self()
+
+    assert :ok =
+             Writes.update_issue_state("42", "In Progress",
+               tracker_settings: tracker_settings(),
+               request_fun: fn
+                 "GET", _path, _params, _body, _settings ->
+                   {:ok, %{status: 200, body: %{"labels" => ["bug", %{"id" => 1}, 7]}}}
+
+                 "PATCH", _path, _params, body, _settings ->
+                   send(test_pid, {:patched, body})
+                   {:ok, %{status: 200, body: %{}}}
+               end
+             )
+
+    assert_received {:patched, %{labels: ["bug", "status:in-progress"]}}
+  end
+
+  test "a transport failure and an unexpected response shape both surface as errors" do
+    assert {:error, :timeout} =
+             Writes.create_comment("42", "body",
+               tracker_settings: tracker_settings(),
+               request_fun: fn _method, _path, _params, _body, _settings -> {:error, :timeout} end
+             )
+
+    assert {:error, :github_unknown_payload} =
+             Writes.create_comment("42", "body",
+               tracker_settings: tracker_settings(),
+               request_fun: fn _method, _path, _params, _body, _settings -> :garbage end
              )
   end
 

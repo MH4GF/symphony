@@ -25,6 +25,32 @@ defmodule SymphonyElixir.PromptRoutingTest do
     assert workflow.prompts == []
   end
 
+  test "load/1 drops malformed prompt entries and non-list match_labels" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-prompt-routing-#{System.unique_integer([:positive])}.md")
+
+    File.write!(path, """
+    ---
+    tracker:
+      kind: linear
+      project_slug: any
+    prompts:
+      - "not a map"
+      - name: missing-template
+      - name: bad-labels
+        match_labels: "life"
+        template: "Body"
+    ---
+
+    Default prompt.
+    """)
+
+    on_exit(fn -> File.rm_rf(path) end)
+
+    assert {:ok, workflow} = Workflow.load(path)
+    assert [%{name: "bad-labels", match_labels: [], template: "Body"}] = workflow.prompts
+  end
+
   test "load/1 extracts prompt variants from `prompts:` frontmatter" do
     path =
       Path.join(System.tmp_dir!(), "symphony-prompt-routing-#{System.unique_integer([:positive])}.md")

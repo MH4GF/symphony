@@ -28,6 +28,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
           SymphonyElixir.ClaudeCode.Runner,
+          SymphonyElixir.GitHub.CLI,
+          SymphonyElixir.ReviewWatcher,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,

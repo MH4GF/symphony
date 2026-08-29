@@ -49,6 +49,19 @@ defmodule SymphonyElixir.GitHub.StatusLabelsTest do
     refute StatusLabels.terminal_state?(nil)
   end
 
+  test "the terminal and default state names are exposed for callers" do
+    assert StatusLabels.completed_state() == "Done"
+    assert StatusLabels.not_planned_state() == "Canceled"
+    assert StatusLabels.default_open_state() == "Backlog"
+  end
+
+  test "status_label? rejects anything that is not a string" do
+    assert StatusLabels.status_label?("status:todo")
+    refute StatusLabels.status_label?("bug")
+    refute StatusLabels.status_label?(nil)
+    refute StatusLabels.status_label?(%{"name" => "status:todo"})
+  end
+
   test "priority labels resolve to 1..4 and ignore anything else" do
     assert StatusLabels.priority_from_labels(["priority:2"]) == 2
     assert StatusLabels.priority_from_labels(["PRIORITY:4"]) == 4
