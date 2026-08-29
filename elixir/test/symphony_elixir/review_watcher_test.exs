@@ -3,6 +3,29 @@ defmodule SymphonyElixir.ReviewWatcherTest do
 
   alias SymphonyElixir.ReviewWatcher
 
+  defmodule FakeWrites do
+    @moduledoc false
+
+    @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
+    def create_comment(issue_id, body) do
+      notify({:writes_comment, issue_id, body})
+    end
+
+    @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
+    def update_issue_state(issue_id, state_name) do
+      notify({:writes_state_update, issue_id, state_name})
+    end
+
+    defp notify(message) do
+      case Application.get_env(:symphony_elixir, :fake_github_recipient) do
+        pid when is_pid(pid) -> send(pid, message)
+        _recipient -> :ok
+      end
+
+      :ok
+    end
+  end
+
   defmodule FakeGitHub do
     @moduledoc false
 
@@ -24,11 +47,12 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     File.mkdir_p!(workspace_root)
 
     Application.put_env(:symphony_elixir, :github_module, FakeGitHub)
+    Application.put_env(:symphony_elixir, :github_writes_module, FakeWrites)
     Application.put_env(:symphony_elixir, :fake_github_recipient, self())
-    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :github_module)
+      Application.delete_env(:symphony_elixir, :github_writes_module)
       Application.delete_env(:symphony_elixir, :fake_github_recipient)
       Application.delete_env(:symphony_elixir, :fake_github_result)
       File.rm_rf(workspace_root)
@@ -46,9 +70,9 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
 
     assert_received {:fake_github_called, ^workspace}
-    assert_received {:memory_tracker_comment, "issue-1", body}
+    assert_received {:writes_comment, "issue-1", body}
     assert body =~ "https://github.com/acme/repo/pull/7"
-    assert_received {:memory_tracker_state_update, "issue-1", "In Progress"}
+    assert_received {:writes_state_update, "issue-1", "In Progress"}
   end
 
   test "leaves a mergeable review issue alone", %{workspace_root: workspace_root} do
@@ -59,7 +83,7 @@ defmodule SymphonyElixir.ReviewWatcherTest do
 
     ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
 
-    refute_received {:memory_tracker_state_update, _issue_id, _state}
+    refute_received {:writes_state_update, _issue_id, _state}
   end
 
   test "does not return the same head commit twice", %{workspace_root: workspace_root} do
@@ -69,10 +93,10 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     put_pull_request("CONFLICTING")
 
     state = ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
-    assert_received {:memory_tracker_state_update, "issue-1", "In Progress"}
+    assert_received {:writes_state_update, "issue-1", "In Progress"}
 
     ReviewWatcher.scan_for_test(state)
-    refute_received {:memory_tracker_state_update, _issue_id, _state}
+    refute_received {:writes_state_update, _issue_id, _state}
   end
 
   test "returns the issue again once the branch has moved on", %{workspace_root: workspace_root} do
@@ -82,12 +106,12 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     put_pull_request("CONFLICTING", "sha-1")
 
     state = ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
-    assert_received {:memory_tracker_state_update, "issue-1", "In Progress"}
+    assert_received {:writes_state_update, "issue-1", "In Progress"}
 
     put_pull_request("CONFLICTING", "sha-2")
     ReviewWatcher.scan_for_test(state)
 
-    assert_received {:memory_tracker_state_update, "issue-1", "In Progress"}
+    assert_received {:writes_state_update, "issue-1", "In Progress"}
   end
 
   test "skips issues without a required label", %{workspace_root: workspace_root} do
@@ -99,7 +123,7 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
 
     refute_received {:fake_github_called, _workspace}
-    refute_received {:memory_tracker_state_update, _issue_id, _state}
+    refute_received {:writes_state_update, _issue_id, _state}
   end
 
   test "skips issues whose workspace no longer exists", %{workspace_root: workspace_root} do
@@ -110,7 +134,7 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
 
     refute_received {:fake_github_called, _workspace}
-    refute_received {:memory_tracker_state_update, _issue_id, _state}
+    refute_received {:writes_state_update, _issue_id, _state}
   end
 
   test "does nothing while review watch is disabled", %{workspace_root: workspace_root} do
@@ -148,7 +172,14 @@ defmodule SymphonyElixir.ReviewWatcherTest do
   end
 
   defp issue(id, identifier, labels) do
-    %Issue{id: id, identifier: identifier, title: "title", state: "In Review", labels: labels}
+    %Issue{
+      id: id,
+      identifier: identifier,
+      title: "title",
+      state: "In Review",
+      labels: labels,
+      dispatchable: true
+    }
   end
 
   defp put_issues(issues) do
