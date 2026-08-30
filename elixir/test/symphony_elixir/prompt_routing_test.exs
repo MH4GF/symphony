@@ -91,6 +91,7 @@ defmodule SymphonyElixir.PromptRoutingTest do
     ---
     tracker:
       kind: linear
+      api_key: "token"
       project_slug: any
     prompts:
       - name: code
@@ -104,7 +105,9 @@ defmodule SymphonyElixir.PromptRoutingTest do
     fallback
     """)
 
-    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      assert :ok = SymphonyElixir.WorkflowStore.force_reload()
+    end
 
     code_issue = %Issue{id: "1", identifier: "T-1", labels: []}
     life_issue = %Issue{id: "2", identifier: "T-2", labels: ["life"]}
@@ -121,12 +124,15 @@ defmodule SymphonyElixir.PromptRoutingTest do
     ---
     tracker:
       kind: linear
+      api_key: "token"
       project_slug: any
     ---
     only body for {{ issue.identifier }}
     """)
 
-    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      assert :ok = SymphonyElixir.WorkflowStore.force_reload()
+    end
 
     issue = %Issue{id: "3", identifier: "T-3", labels: ["life"]}
     assert PromptBuilder.build_prompt(issue) == "only body for T-3"
