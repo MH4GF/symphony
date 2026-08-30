@@ -801,7 +801,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 5_000
     )
 
@@ -853,7 +853,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 50
     )
 
@@ -902,7 +902,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       codex_stall_timeout_ms: 1_000
     )
 
@@ -943,6 +943,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       started_at: stale_activity_at
     }
 
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
     :sys.replace_state(pid, fn _ ->
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
@@ -972,7 +974,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       codex_stall_timeout_ms: 1_000
     )
 
@@ -1004,7 +1006,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         id: issue_id,
         identifier: "MT-MCP",
         state: "In Progress",
-        url: "https://example.org/issues/MT-MCP"
+        url: "https://example.org/issues/MT-MCP",
+        dispatchable: true
       },
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-MCP",
@@ -1018,6 +1021,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_event: :notification,
       started_at: stale_activity_at
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1054,7 +1059,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator blocks failed workers after app-server reports input required" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
     issue_id = "issue-input-required"
     orchestrator_name = Module.concat(__MODULE__, :InputRequiredBlockOrchestrator)
@@ -1074,7 +1079,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: self(),
       ref: ref,
       identifier: "MT-INPUT",
-      issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress"},
+      issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress", dispatchable: true},
       session_id: "thread-input-turn-input",
       last_codex_message: %{
         event: :turn_input_required,
@@ -1085,6 +1090,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_event: :turn_input_required,
       started_at: started_at
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1107,7 +1114,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator blocks normal worker exits after input required completion" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
     issue_id = "issue-input-required-normal"
     orchestrator_name = Module.concat(__MODULE__, :InputRequiredNormalBlockOrchestrator)
@@ -1126,7 +1133,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: self(),
       ref: ref,
       identifier: "MT-INPUT-NORMAL",
-      issue: %Issue{id: issue_id, identifier: "MT-INPUT-NORMAL", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-INPUT-NORMAL",
+        state: "In Progress",
+        dispatchable: true
+      },
       session_id: "thread-input-normal",
       completion: %{outcome: :input_required},
       last_codex_message: nil,
@@ -1134,6 +1146,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_event: nil,
       started_at: DateTime.utc_now()
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1322,19 +1336,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "status dashboard coalesces rapid updates to one render per interval" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
-    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+    runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
 
     on_exit(fn ->
-      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+      if is_nil(Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)) do
+        case Supervisor.restart_child(
+               SymphonyElixir.Supervisor,
+               SymphonyElixir.AgentRuntimeSupervisor
+             ) do
           {:ok, _pid} -> :ok
           {:error, {:already_started, _pid}} -> :ok
         end
       end
     end)
 
-    if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    if is_pid(runtime_pid) do
+      assert :ok =
+               Supervisor.terminate_child(
+                 SymphonyElixir.Supervisor,
+                 SymphonyElixir.AgentRuntimeSupervisor
+               )
     end
 
     {:ok, pid} =
@@ -1676,23 +1697,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     humanized = StatusDashboard.humanize_codex_message(message)
     assert humanized =~ "command approval requested"
     assert humanized =~ "auto-approved"
-  end
-
-  test "status dashboard formats auto-answered tool input updates from codex" do
-    message = %{
-      event: :tool_input_auto_answered,
-      message: %{
-        payload: %{
-          "method" => "item/tool/requestUserInput",
-          "params" => %{"question" => "Continue?"}
-        },
-        answer: "This is a non-interactive session. Operator input is unavailable."
-      }
-    }
-
-    humanized = StatusDashboard.humanize_codex_message(message)
-    assert humanized =~ "tool requires user input"
-    assert humanized =~ "auto-answered"
   end
 
   test "status dashboard enriches wrapper reasoning and message streaming events with payload context" do

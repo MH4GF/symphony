@@ -19,4 +19,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 # Production defaults to the Claude Code --bg runner (SymphonyElixir.ClaudeCode.Runner).
 if config_env() == :test do
   config :symphony_elixir, :agent_runner_module, SymphonyElixir.Codex.AppServer
+
+  config :symphony_elixir,
+    workflow_file_path: Path.expand("../test/fixtures/startup_workflow.md", __DIR__)
 end

@@ -1,13 +1,13 @@
 defmodule SymphonyElixir.PromptBuilder do
   @moduledoc """
-  Builds agent prompts from issue data.
+  Builds agent prompts from normalized tracker work item data.
   """
 
   alias SymphonyElixir.{Config, Workflow, WorkflowRouter}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
-  @spec build_prompt(SymphonyElixir.Issue.t(), keyword()) :: String.t()
+  @spec build_prompt(SymphonyElixir.Tracker.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
     {template_body, variant} = select_template(Workflow.current(), issue)
 
