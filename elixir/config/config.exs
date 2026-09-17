@@ -20,4 +20,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 # (see SymphonyElixir.Config.agent_runner_module/0).
 if config_env() == :test do
   config :symphony_elixir, :agent_runner_module, SymphonyElixir.Codex.AppServer
+
+  config :symphony_elixir,
+    workflow_file_path: Path.expand("../test/fixtures/startup_workflow.md", __DIR__)
 end

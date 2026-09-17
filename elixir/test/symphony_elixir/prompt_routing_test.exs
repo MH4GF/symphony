@@ -25,6 +25,32 @@ defmodule SymphonyElixir.PromptRoutingTest do
     assert workflow.prompts == []
   end
 
+  test "load/1 drops malformed prompt entries and non-list match_labels" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-prompt-routing-#{System.unique_integer([:positive])}.md")
+
+    File.write!(path, """
+    ---
+    tracker:
+      kind: linear
+      project_slug: any
+    prompts:
+      - "not a map"
+      - name: missing-template
+      - name: bad-labels
+        match_labels: "life"
+        template: "Body"
+    ---
+
+    Default prompt.
+    """)
+
+    on_exit(fn -> File.rm_rf(path) end)
+
+    assert {:ok, workflow} = Workflow.load(path)
+    assert [%{name: "bad-labels", match_labels: [], template: "Body"}] = workflow.prompts
+  end
+
   test "load/1 extracts prompt variants from `prompts:` frontmatter" do
     path =
       Path.join(System.tmp_dir!(), "symphony-prompt-routing-#{System.unique_integer([:positive])}.md")
@@ -65,6 +91,7 @@ defmodule SymphonyElixir.PromptRoutingTest do
     ---
     tracker:
       kind: linear
+      api_key: "token"
       project_slug: any
     prompts:
       - name: code
@@ -78,7 +105,9 @@ defmodule SymphonyElixir.PromptRoutingTest do
     fallback
     """)
 
-    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      assert :ok = SymphonyElixir.WorkflowStore.force_reload()
+    end
 
     code_issue = %Issue{id: "1", identifier: "T-1", labels: []}
     life_issue = %Issue{id: "2", identifier: "T-2", labels: ["life"]}
@@ -95,12 +124,15 @@ defmodule SymphonyElixir.PromptRoutingTest do
     ---
     tracker:
       kind: linear
+      api_key: "token"
       project_slug: any
     ---
     only body for {{ issue.identifier }}
     """)
 
-    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      assert :ok = SymphonyElixir.WorkflowStore.force_reload()
+    end
 
     issue = %Issue{id: "3", identifier: "T-3", labels: ["life"]}
     assert PromptBuilder.build_prompt(issue) == "only body for T-3"

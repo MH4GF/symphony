@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.WorkflowRouterTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixir.WorkflowRouter
 
   @code %{name: "code", match_labels: []}

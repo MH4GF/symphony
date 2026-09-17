@@ -1,0 +1,508 @@
+defmodule SymphonyElixir.GitHub.Client do
+  @moduledoc """
+  Thin GitHub REST client for repository issue polling.
+  """
+
+  require Logger
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.StatusLabels
+  alias SymphonyElixir.Tracker.Issue
+
+  @default_api_url "https://api.github.com"
+  @api_version "2022-11-28"
+  @page_size 100
+  @user_agent "symphony"
+  @closed_lookback_seconds 30 * 24 * 60 * 60
+  @token_ttl_ms 45 * 60 * 1_000
+  @default_token_helper "~/.hermes/bin/gh-app-token"
+
+  @spec validate_settings(map()) :: :ok | {:error, term()}
+  def validate_settings(tracker_settings) do
+    with {:ok, _settings} <- settings(tracker_settings), do: :ok
+  end
+
+  @spec secret_environment_names(map()) :: [String.t()]
+  def secret_environment_names(tracker_settings) do
+    provider = provider_settings(tracker_settings)
+
+    [
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "GITHUB_ENTERPRISE_TOKEN",
+      "GH_ENTERPRISE_TOKEN" | env_reference_names([provider["token"]])
+    ]
+    |> Enum.uniq()
+  end
+
+  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names) when is_list(state_names) do
+    settings = Config.settings!()
+    fetch_issues_by_states(state_names, settings.tracker, &perform_request/5, StatusLabels.known_states(settings))
+  end
+
+  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids) when is_list(issue_ids) do
+    settings = Config.settings!()
+    fetch_issues_by_ids(issue_ids, settings.tracker, &perform_request/5, StatusLabels.known_states(settings))
+  end
+
+  @doc """
+  Resolves the configured `owner/name` repository for host-side callers that
+  build their own REST paths.
+  """
+  @spec repo(map()) :: {:ok, String.t()} | {:error, term()}
+  def repo(tracker_settings) when is_map(tracker_settings) do
+    with {:ok, github_settings} <- settings(tracker_settings), do: {:ok, github_settings.repo}
+  end
+
+  @spec request(String.t(), String.t(), map(), term(), keyword()) ::
+          {:ok, %{status: integer(), body: term()}} | {:error, term()}
+  def request(method, path, params, body, opts \\ [])
+      when is_binary(method) and is_binary(path) and is_map(params) and is_list(opts) do
+    tracker_settings = Keyword.get_lazy(opts, :tracker_settings, fn -> Config.settings!().tracker end)
+    request_fun = Keyword.get(opts, :request_fun, &perform_request/5)
+
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      request_fun.(method, path, params, body, github_settings)
+    end
+  end
+
+  @doc false
+  @spec reset_token_cache_for_test() :: :ok
+  def reset_token_cache_for_test do
+    :persistent_term.erase({__MODULE__, :token})
+    :ok
+  end
+
+  @doc false
+  @spec token_for_test(map()) :: {:ok, String.t()} | {:error, term()}
+  def token_for_test(tracker_settings) when is_map(tracker_settings) do
+    with {:ok, github_settings} <- settings(tracker_settings), do: {:ok, github_settings.token}
+  end
+
+  @doc false
+  @spec normalize_issue_for_test(map(), String.t(), [String.t()]) :: Issue.t() | nil
+  def normalize_issue_for_test(issue, repo, known_states)
+      when is_map(issue) and is_binary(repo) and is_list(known_states) do
+    normalize_issue(issue, repo, known_states)
+  end
+
+  @doc false
+  @spec fetch_issues_by_states_for_test([String.t()], map(), function(), [String.t()]) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states_for_test(state_names, tracker_settings, request_fun, known_states)
+      when is_list(state_names) and is_map(tracker_settings) and is_function(request_fun, 5) and
+             is_list(known_states) do
+    fetch_issues_by_states(state_names, tracker_settings, request_fun, known_states)
+  end
+
+  @doc false
+  @spec fetch_issues_by_ids_for_test([String.t()], map(), function(), [String.t()]) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids_for_test(issue_ids, tracker_settings, request_fun, known_states)
+      when is_list(issue_ids) and is_map(tracker_settings) and is_function(request_fun, 5) and is_list(known_states) do
+    fetch_issues_by_ids(issue_ids, tracker_settings, request_fun, known_states)
+  end
+
+  defp fetch_issues_by_states(state_names, tracker_settings, request_fun, known_states) do
+    normalized_states = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
+
+    case github_state_queries(state_names) do
+      [] ->
+        {:ok, []}
+
+      state_queries ->
+        with {:ok, github_settings} <- settings(tracker_settings) do
+          fetch_state_queries(state_queries, github_settings, normalized_states, request_fun, known_states, [])
+        end
+    end
+  end
+
+  defp fetch_state_queries([], _settings, _requested_states, _request_fun, _known_states, acc) do
+    {:ok, acc |> Enum.reverse() |> List.flatten()}
+  end
+
+  defp fetch_state_queries([state_query | rest], settings, requested_states, request_fun, known_states, acc) do
+    with {:ok, issues} <-
+           do_fetch_pages(settings, state_query, requested_states, 1, request_fun, known_states, []) do
+      fetch_state_queries(rest, settings, requested_states, request_fun, known_states, [issues | acc])
+    end
+  end
+
+  defp fetch_issues_by_ids(issue_ids, tracker_settings, request_fun, known_states) do
+    ids = Enum.uniq(issue_ids)
+
+    case ids do
+      [] ->
+        {:ok, []}
+
+      ids ->
+        with {:ok, github_settings} <- settings(tracker_settings) do
+          fetch_issue_ids(ids, github_settings, request_fun, known_states, [])
+        end
+    end
+  end
+
+  defp do_fetch_pages(settings, state_query, requested_states, page, request_fun, known_states, acc) do
+    params = page_params(state_query, page)
+
+    with {:ok, payload} <-
+           request_with_settings(
+             "GET",
+             repository_issues_path(settings),
+             params,
+             nil,
+             settings,
+             request_fun,
+             false
+           ),
+         true <- is_list(payload) or {:error, :github_unknown_payload} do
+      issues = normalize_state_page(payload, settings.repo, requested_states, known_states)
+      updated_acc = [issues | acc]
+
+      if length(payload) < @page_size do
+        {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
+      else
+        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, known_states, updated_acc)
+      end
+    end
+  end
+
+  # Closed issues accumulate without bound, so a terminal-state read only looks
+  # back far enough to catch work Symphony still tracks.
+  defp page_params("open", page) do
+    %{"state" => "open", "per_page" => @page_size, "page" => page, "sort" => "created", "direction" => "asc"}
+  end
+
+  defp page_params("closed" = state_query, page) do
+    since =
+      DateTime.utc_now()
+      |> DateTime.add(-@closed_lookback_seconds, :second)
+      |> DateTime.to_iso8601()
+
+    %{
+      "state" => state_query,
+      "per_page" => @page_size,
+      "page" => page,
+      "sort" => "updated",
+      "direction" => "asc",
+      "since" => since
+    }
+  end
+
+  defp fetch_issue_ids([], _settings, _request_fun, _known_states, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp fetch_issue_ids([id | rest], settings, request_fun, known_states, acc) do
+    with {:ok, issue_number} <- parse_issue_number(id),
+         {:ok, payload} <-
+           request_with_settings(
+             "GET",
+             repository_issue_path(settings, issue_number),
+             %{},
+             nil,
+             settings,
+             request_fun,
+             true
+           ) do
+      continue_issue_id_fetch(payload, rest, settings, request_fun, known_states, acc)
+    end
+  end
+
+  defp continue_issue_id_fetch(:not_found, rest, settings, request_fun, known_states, acc) do
+    fetch_issue_ids(rest, settings, request_fun, known_states, acc)
+  end
+
+  defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, known_states, acc) do
+    case normalize_issue(raw_issue, settings.repo, known_states) do
+      %Issue{} = issue -> fetch_issue_ids(rest, settings, request_fun, known_states, [issue | acc])
+      nil -> {:error, :github_unknown_payload}
+    end
+  end
+
+  defp continue_issue_id_fetch(_payload, _rest, _settings, _request_fun, _known_states, _acc) do
+    {:error, :github_unknown_payload}
+  end
+
+  defp normalize_state_page(payload, repo, requested_states, known_states) do
+    issues = Enum.map(payload, &normalize_issue(&1, repo, known_states))
+    malformed_count = Enum.count(issues, &is_nil/1)
+
+    if malformed_count > 0 do
+      Logger.warning("Dropping malformed GitHub issue records count=#{malformed_count}")
+    end
+
+    issues
+    |> Enum.reject(&is_nil/1)
+    |> Enum.filter(&MapSet.member?(requested_states, normalize_state(&1.state)))
+  end
+
+  defp normalize_issue(issue, repo, known_states) when is_map(issue) and is_binary(repo) do
+    issue_number = issue["number"]
+    state = issue["state"]
+
+    if is_integer(issue_number) and issue_number > 0 and
+         Enum.all?([issue["title"], state], &present_string?/1) do
+      labels = extract_labels(issue)
+
+      %Issue{
+        id: Integer.to_string(issue_number),
+        native_ref: native_ref(issue, repo),
+        identifier: "GH-#{issue_number}",
+        title: issue["title"],
+        description: issue["body"],
+        priority: StatusLabels.priority_from_labels(labels),
+        state: StatusLabels.resolve_state(issue, labels, known_states),
+        url: issue["html_url"],
+        assignee_id: get_in(issue, ["assignee", "login"]),
+        labels: labels,
+        blocked_by: [],
+        dispatchable: not Map.has_key?(issue, "pull_request"),
+        created_at: parse_datetime(issue["created_at"]),
+        updated_at: parse_datetime(issue["updated_at"])
+      }
+    end
+  end
+
+  defp normalize_issue(_issue, _repo, _known_states), do: nil
+
+  defp native_ref(issue, repo) do
+    %{
+      "id" => issue["id"],
+      "node_id" => issue["node_id"],
+      "number" => issue["number"],
+      "repo" => repo
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+    |> case do
+      empty when map_size(empty) == 0 -> nil
+      ref -> ref
+    end
+  end
+
+  defp extract_labels(%{"labels" => labels}) when is_list(labels) do
+    labels
+    |> Enum.flat_map(fn
+      %{"name" => name} when is_binary(name) -> [name]
+      name when is_binary(name) -> [name]
+      _ -> []
+    end)
+    |> Enum.map(&(String.trim(&1) |> String.downcase()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp extract_labels(_issue), do: []
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
+
+  defp request_with_settings(method, path, params, body, settings, request_fun, allow_not_found) do
+    case request_fun.(method, path, params, body, settings) do
+      {:ok, %{status: status, body: payload}} when status in 200..299 ->
+        {:ok, payload}
+
+      {:ok, %{status: 404}} when allow_not_found ->
+        {:ok, :not_found}
+
+      {:ok, %{status: status}} when is_integer(status) ->
+        Logger.error("GitHub API request failed status=#{status} method=#{method} path=#{path}")
+        {:error, {:github_api_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, :github_unknown_payload}
+    end
+  end
+
+  defp perform_request(method, path, params, body, settings) do
+    with {:ok, request_method} <- request_method(method) do
+      request_opts = [
+        method: request_method,
+        url: settings.api_url <> path,
+        headers: github_headers(settings.token),
+        params: params,
+        connect_options: [timeout: 30_000]
+      ]
+
+      request_opts = if is_nil(body), do: request_opts, else: Keyword.put(request_opts, :json, body)
+
+      case Req.request(request_opts) do
+        {:ok, response} -> {:ok, %{status: response.status, body: response.body}}
+        {:error, reason} -> {:error, {:github_api_request, reason}}
+      end
+    end
+  end
+
+  defp settings(tracker_settings) when is_map(tracker_settings) do
+    provider = provider_settings(tracker_settings)
+    api_url = provider["api_url"] || @default_api_url
+    repo = resolve_setting(provider["repo"], System.get_env("GITHUB_REPO"))
+    token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
+
+    cond do
+      not valid_api_url?(api_url) ->
+        {:error, :invalid_github_api_url}
+
+      not present_string?(repo) ->
+        {:error, :missing_github_repo}
+
+      not valid_repo?(repo) ->
+        {:error, :invalid_github_repo}
+
+      present_string?(token) ->
+        {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: token}}
+
+      true ->
+        with {:ok, helper_token} <- helper_token() do
+          {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: helper_token}}
+        end
+    end
+  end
+
+  # GitHub App installation tokens expire hourly, so a long-running host needs a
+  # helper it can re-run rather than a token baked into the workflow file.
+  defp helper_token do
+    now = System.monotonic_time(:millisecond)
+
+    case :persistent_term.get({__MODULE__, :token}, nil) do
+      {token, expires_at} when expires_at > now -> {:ok, token}
+      _expired -> mint_helper_token(now)
+    end
+  end
+
+  defp mint_helper_token(now) do
+    helper = token_helper_path()
+
+    if File.regular?(helper) do
+      run_token_helper(helper, now)
+    else
+      {:error, :missing_github_token}
+    end
+  end
+
+  defp run_token_helper(helper, now) do
+    case System.cmd(helper, [], stderr_to_stdout: true) do
+      {output, 0} ->
+        token = String.trim(output)
+        :persistent_term.put({__MODULE__, :token}, {token, now + @token_ttl_ms})
+        {:ok, token}
+
+      {output, status} ->
+        {:error, {:github_token_helper_failed, status, String.trim(output)}}
+    end
+  end
+
+  defp token_helper_path do
+    case System.get_env("SYMPHONY_GH_TOKEN_HELPER") do
+      path when is_binary(path) and path != "" -> Path.expand(path)
+      _unset -> Path.expand(@default_token_helper)
+    end
+  end
+
+  defp provider_settings(%{provider: provider}) when is_map(provider), do: provider
+  defp provider_settings(_tracker_settings), do: %{}
+
+  defp resolve_setting(nil, fallback), do: normalize_string(fallback)
+
+  defp resolve_setting("$" <> env_name, fallback) do
+    if valid_env_name?(env_name) do
+      normalize_string(System.get_env(env_name) || fallback)
+    else
+      nil
+    end
+  end
+
+  defp resolve_setting(value, _fallback), do: normalize_string(value)
+
+  defp normalize_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_string(_value), do: nil
+
+  defp env_reference_names(values) do
+    Enum.flat_map(values, fn
+      "$" <> env_name when is_binary(env_name) -> if valid_env_name?(env_name), do: [env_name], else: []
+      _ -> []
+    end)
+  end
+
+  defp valid_env_name?(name), do: String.match?(name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/)
+
+  defp valid_api_url?(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{scheme: "https", host: host} when is_binary(host) -> true
+      _ -> false
+    end
+  end
+
+  defp valid_api_url?(_value), do: false
+  defp valid_repo?(repo) when is_binary(repo), do: String.match?(repo, ~r/^[^\s\/]+\/[^\s\/]+$/)
+  defp valid_repo?(_repo), do: false
+
+  defp repository_issues_path(settings), do: "/repos/#{encoded_repo(settings.repo)}/issues"
+
+  defp repository_issue_path(settings, issue_number),
+    do: "#{repository_issues_path(settings)}/#{issue_number}"
+
+  defp encoded_repo(repo) do
+    repo
+    |> String.split("/", parts: 2)
+    |> Enum.map_join("/", fn segment -> URI.encode(segment, &URI.char_unreserved?/1) end)
+  end
+
+  defp github_headers(token) do
+    [
+      {"Accept", "application/vnd.github+json"},
+      {"Authorization", "Bearer #{token}"},
+      {"X-GitHub-Api-Version", @api_version},
+      {"User-Agent", @user_agent}
+    ]
+  end
+
+  # Terminal workflow states live on closed issues; every other state keeps the
+  # issue open. Asking for each GitHub state separately keeps the closed-issue
+  # lookback window off the open ones, which have no age bound.
+  defp github_state_queries(state_names) do
+    {terminal, active} = Enum.split_with(state_names, &StatusLabels.terminal_state?(trim_state(&1)))
+
+    Enum.reject([if(active != [], do: "open"), if(terminal != [], do: "closed")], &is_nil/1)
+  end
+
+  defp trim_state(state) when is_binary(state), do: String.trim(state)
+  defp trim_state(state), do: state
+
+  defp parse_issue_number(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {number, ""} when number > 0 -> {:ok, number}
+      _ -> {:error, :invalid_github_issue_id}
+    end
+  end
+
+  defp parse_issue_number(_value), do: {:error, :invalid_github_issue_id}
+
+  defp request_method("GET"), do: {:ok, :get}
+  defp request_method("POST"), do: {:ok, :post}
+  defp request_method("PATCH"), do: {:ok, :patch}
+  defp request_method("PUT"), do: {:ok, :put}
+  defp request_method("DELETE"), do: {:ok, :delete}
+  defp request_method(_method), do: {:error, :invalid_github_method}
+
+  defp normalize_state(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
+  defp normalize_state(_value), do: ""
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
+end

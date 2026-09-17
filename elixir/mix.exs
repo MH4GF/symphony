@@ -4,7 +4,7 @@ defmodule SymphonyElixir.MixProject do
   def project do
     [
       app: :symphony_elixir,
-      version: "0.1.0",
+      version: "0.0.2",
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -13,16 +13,23 @@ defmodule SymphonyElixir.MixProject do
           threshold: 100
         ],
         ignore_modules: [
+          SymphonyElixir.Asana.Client,
           SymphonyElixir.Config,
+          SymphonyElixir.GitHub.Client,
+          SymphonyElixir.GitLab.Client,
+          SymphonyElixir.Jira.Client,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.AgentRunner,
+          SymphonyElixir.Application,
           SymphonyElixir.CLI,
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
           SymphonyElixir.ClaudeCode.Runner,
+          SymphonyElixir.GitHub.CLI,
+          SymphonyElixir.ReviewWatcher,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
@@ -48,6 +55,7 @@ defmodule SymphonyElixir.MixProject do
         plt_add_apps: [:mix]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -75,6 +83,7 @@ defmodule SymphonyElixir.MixProject do
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
+      {:burrito, "~> 1.5", only: :prod, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
@@ -94,6 +103,22 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos_arm64: [os: :darwin, cpu: :aarch64],
+            macos_x86_64: [os: :darwin, cpu: :x86_64],
+            linux_arm64: [os: :linux, cpu: :aarch64],
+            linux_x86_64: [os: :linux, cpu: :x86_64]
+          ]
+        ]
+      ]
     ]
   end
 end

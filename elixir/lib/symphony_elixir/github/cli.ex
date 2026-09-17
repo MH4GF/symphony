@@ -1,4 +1,4 @@
-defmodule SymphonyElixir.GitHub do
+defmodule SymphonyElixir.GitHub.CLI do
   @moduledoc """
   Reads pull request state for a workspace branch through the `gh` CLI.
   """
