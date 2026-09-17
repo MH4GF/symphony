@@ -1035,6 +1035,27 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().worker.max_concurrent_agents_per_host == 2
   end
 
+  test "agent.runner defaults to claude and selects the Claude Code runner" do
+    File.write!(Workflow.workflow_file_path(), "---\nagent:\n  max_turns: 3\n---\n")
+
+    assert Config.settings!().agent.runner == "claude"
+    assert Config.agent_runner_module() == SymphonyElixir.ClaudeCode.Runner
+  end
+
+  test "agent.runner codex selects the Codex app-server runner" do
+    File.write!(Workflow.workflow_file_path(), "---\nagent:\n  runner: codex\n---\n")
+
+    assert Config.settings!().agent.runner == "codex"
+    assert Config.agent_runner_module() == SymphonyElixir.Codex.AppServer
+  end
+
+  test "agent.runner rejects unknown runners" do
+    File.write!(Workflow.workflow_file_path(), "---\nagent:\n  runner: gemini\n---\n")
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.runner"
+  end
+
   test "schema helpers cover custom type and state limit validation" do
     assert StringOrMap.type() == :map
     assert StringOrMap.embed_as(:json) == :self
