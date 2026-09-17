@@ -130,7 +130,10 @@ defmodule SymphonyElixir.Workflow do
   defp nilable_string(_), do: nil
 
   defp split_front_matter(content) do
-    lines = String.split(content, ~r/\R/, trim: false)
+    # Split on ASCII line breaks only. `\R` without the `u` flag also matches
+    # the raw byte 0x85 (NEL), which appears as a continuation byte inside
+    # many multibyte characters and would split them apart.
+    lines = String.split(content, ~r/\r\n|\n|\r/, trim: false)
 
     case lines do
       ["---" | tail] ->

@@ -91,40 +91,43 @@ defmodule SymphonyElixir.AgentRunner do
     runner = runner_module()
 
     with {:ok, session} <- runner.start_session(workspace, worker_host: worker_host) do
+      # The runner is resolved once per run so a WORKFLOW.md reload between
+      # turns cannot hand one runner's session to another runner.
+      run = %{
+        runner: runner,
+        session: session,
+        workspace: workspace,
+        recipient: codex_update_recipient,
+        opts: opts,
+        issue_state_fetcher: issue_state_fetcher,
+        max_turns: max_turns
+      }
+
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(run, issue, 1)
       after
         runner.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(%{runner: runner, max_turns: max_turns} = run, issue, turn_number) do
+    prompt = build_turn_prompt(issue, run.opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           runner_module().run_turn(
-             app_session,
+           runner.run_turn(
+             run.session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(run.recipient, issue)
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{run.workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
+      case continue_with_issue?(issue, run.issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+          do_run_codex_turns(run, refreshed_issue, turn_number + 1)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
@@ -211,10 +214,11 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.downcase()
   end
 
-  # Production uses the Claude Code --bg runner. Tests override this to the
-  # Codex app-server stub via config (config/config.exs, test env).
+  # `agent.runner` in WORKFLOW.md selects the runner (default: Claude Code --bg).
+  # The application env is a test-only override that pins the Codex app-server
+  # stub (config/config.exs, test env).
   defp runner_module do
-    Application.get_env(:symphony_elixir, :agent_runner_module, SymphonyElixir.ClaudeCode.Runner)
+    Application.get_env(:symphony_elixir, :agent_runner_module) || Config.agent_runner_module()
   end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do

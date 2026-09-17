@@ -207,6 +207,17 @@ defmodule SymphonyElixir.CoreTest do
              Workflow.load(workflow_path)
   end
 
+  test "workflow load keeps multibyte characters whose UTF-8 encoding contains 0x85 intact" do
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "MULTIBYTE_WORKFLOW.md")
+    # 全 (e5 85 a8) and 態 (e6 85 8b) both contain the NEL byte 0x85.
+    File.write!(workflow_path, "---\ntracker:\n  kind: linear\n  project_slug: 全体\n---\n現在の状態から resume する。\n")
+
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(workflow_path)
+    assert config["tracker"]["project_slug"] == "全体"
+    assert prompt == "現在の状態から resume する。"
+    assert String.valid?(prompt)
+  end
+
   test "workflow load rejects non-map front matter" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "INVALID_FRONT_MATTER_WORKFLOW.md")
     File.write!(workflow_path, "---\n- not-a-map\n---\nPrompt body\n")

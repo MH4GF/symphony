@@ -16,7 +16,8 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   server: false
 
 # Existing AgentRunner integration tests drive the Codex app-server stub.
-# Production defaults to the Claude Code --bg runner (SymphonyElixir.ClaudeCode.Runner).
+# Outside tests the runner comes from `agent.runner` in WORKFLOW.md
+# (see SymphonyElixir.Config.agent_runner_module/0).
 if config_env() == :test do
   config :symphony_elixir, :agent_runner_module, SymphonyElixir.Codex.AppServer
 

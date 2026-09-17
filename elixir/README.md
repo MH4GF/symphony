@@ -134,6 +134,7 @@ hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
 agent:
+  runner: claude
   max_concurrent_agents: 10
   max_turns: 20
 codex:
@@ -168,6 +169,8 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
+- `agent.runner` selects the coding agent: `claude` runs each turn through `claude --bg` in the
+  workspace, `codex` launches `codex app-server` using the `codex.*` settings. Default: `claude`.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

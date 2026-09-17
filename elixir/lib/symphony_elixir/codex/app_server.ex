@@ -685,6 +685,46 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
+  # Codex asks for permission before running an MCP tool that may write (for
+  # example Linear `save_issue`). It is delivered as an MCP elicitation tagged
+  # with `_meta.codex_approval_kind == "mcp_tool_call"` and an empty form
+  # schema, so accepting it needs no content. Other elicitations still count
+  # as hard input blockers.
+  defp maybe_handle_approval_request(
+         port,
+         "mcpServer/elicitation/request",
+         %{"id" => id, "params" => %{"_meta" => %{"codex_approval_kind" => "mcp_tool_call"}}} = payload,
+         payload_string,
+         on_message,
+         metadata,
+         _tool_executor,
+         true
+       ) do
+    send_message(port, %{"id" => id, "result" => %{"action" => "accept", "content" => %{}}})
+
+    emit_message(
+      on_message,
+      :approval_auto_approved,
+      %{payload: payload, raw: payload_string, decision: "accept"},
+      metadata
+    )
+
+    :approved
+  end
+
+  defp maybe_handle_approval_request(
+         _port,
+         "mcpServer/elicitation/request",
+         %{"id" => _id, "params" => %{"_meta" => %{"codex_approval_kind" => "mcp_tool_call"}}},
+         _payload_string,
+         _on_message,
+         _metadata,
+         _tool_executor,
+         false
+       ) do
+    :approval_required
+  end
+
   defp maybe_handle_approval_request(
          port,
          "item/tool/requestUserInput",
