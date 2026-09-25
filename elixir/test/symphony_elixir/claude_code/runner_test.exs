@@ -75,6 +75,50 @@ defmodule SymphonyElixir.ClaudeCode.RunnerTest do
       %{settings: settings, session: session}
     end
 
+    test "seeds workspace trust before launching", %{settings: settings, session: session} do
+      test_pid = self()
+
+      trust = fn workspace ->
+        send(test_pid, {:trust, workspace})
+        :ok
+      end
+
+      # run_turn is synchronous in the caller, so the trust message must already
+      # be in the mailbox when the launcher runs.
+      runner = fn _args, _ws ->
+        assert_received {:trust, "/tmp/symphony-runner-test"}
+        send(test_pid, :launched)
+        {"backgrounded · aaaa0009\n", 0}
+      end
+
+      reader = fn _short -> {:ok, ~s({"state":"done","sessionId":"sess-t","output":{"result":"ok"}})} end
+
+      assert {:ok, %{short: "aaaa0009"}} =
+               Runner.run_turn(session, "do it", %{id: "1", identifier: "T-1"},
+                 settings: settings,
+                 command_runner: runner,
+                 state_reader: reader,
+                 sleep_fn: fn _ -> :ok end,
+                 workspace_trust: trust
+               )
+
+      assert_received :launched
+    end
+
+    test "a trust seeding failure does not block the launch", %{settings: settings, session: session} do
+      runner = fn _args, _ws -> {"backgrounded · aaaa0010\n", 0} end
+      reader = fn _short -> {:ok, ~s({"state":"done","sessionId":"sess-u","output":{"result":"ok"}})} end
+
+      assert {:ok, %{short: "aaaa0010"}} =
+               Runner.run_turn(session, "do it", %{id: "1", identifier: "T-1"},
+                 settings: settings,
+                 command_runner: runner,
+                 state_reader: reader,
+                 sleep_fn: fn _ -> :ok end,
+                 workspace_trust: fn _ -> {:error, :boom} end
+               )
+    end
+
     test "done returns ok with session_id and result", %{settings: settings, session: session} do
       test_pid = self()
 
