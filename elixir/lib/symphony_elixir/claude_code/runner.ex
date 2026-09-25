@@ -6,6 +6,10 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   `start_session/2`, `run_turn/4`, `stop_session/1` contract so `AgentRunner`
   only swaps the alias.
 
+  Before each launch the workspace is recorded as trusted in Claude's config
+  (see `SymphonyElixir.ClaudeCode.WorkspaceTrust`); without that, `claude --bg`
+  refuses to start in a fresh clone.
+
   A bg session has no long-lived stdio process. Each turn launches
   `claude --bg "<prompt>"` in the workspace, captures the daemon short id, and
   polls `~/.claude/jobs/<short>/state.json` until the session reaches a
@@ -16,6 +20,7 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   """
 
   require Logger
+  alias SymphonyElixir.ClaudeCode.WorkspaceTrust
   alias SymphonyElixir.Config
 
   @bg_short_re ~r/^backgrounded · ([a-f0-9]{8})\b/m
@@ -69,8 +74,12 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     sleep_fn = Keyword.get(opts, :sleep_fn, &Process.sleep/1)
     settings = Keyword.get(opts, :settings, Config.settings!())
 
+    trust = Keyword.get(opts, :workspace_trust, &WorkspaceTrust.ensure_trusted/1)
+
     prior_session_id = Agent.get(holder, & &1.session_id)
     args = build_args(prompt, prior_session_id, settings)
+
+    ensure_workspace_trusted(trust, workspace, issue)
 
     case launch(runner, args, workspace) do
       {:ok, short} ->
@@ -94,6 +103,21 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   end
 
   # --- launch -----------------------------------------------------------------
+
+  # `claude --bg` (>= 2.1.280) exits when the workspace has not accepted the
+  # trust prompt. Persist trust for the clone first; a seeding failure is
+  # logged but does not block the launch, so the real `claude` error surfaces.
+  defp ensure_workspace_trusted(trust, workspace, issue) do
+    case trust.(workspace) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("workspace trust seeding failed for #{issue_context(issue)} workspace=#{workspace}: #{inspect(reason)}")
+
+        :ok
+    end
+  end
 
   defp launch(runner, args, workspace) do
     {output, _status} = runner.(args, workspace)
