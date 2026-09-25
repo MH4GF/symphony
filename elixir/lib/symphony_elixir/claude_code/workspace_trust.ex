@@ -27,8 +27,7 @@ defmodule SymphonyElixir.ClaudeCode.WorkspaceTrust do
   Ensure `workspace` is recorded as trusted in the Claude config file.
 
   Returns `:ok` when the entry already existed or was written, otherwise
-  `{:error, reason}`. Never raises; callers decide whether a failure blocks
-  the launch.
+  `{:error, reason}`. Callers decide whether a failure blocks the launch.
   """
   @spec ensure_trusted(Path.t(), Path.t() | nil) :: :ok | {:error, term()}
   def ensure_trusted(workspace, config_path \\ nil) when is_binary(workspace) do
@@ -42,8 +41,6 @@ defmodule SymphonyElixir.ClaudeCode.WorkspaceTrust do
         write_config(path, put_trust(config, key))
       end
     end
-  rescue
-    e -> {:error, Exception.message(e)}
   end
 
   @doc """
