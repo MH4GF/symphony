@@ -362,10 +362,10 @@ required labels, and when GitHub reports a conflict it comments on the issue and
 Notes:
 
 - Disabled by default. When enabled, `states` and `on_conflict_state` are required.
-- Requires `tracker.kind: github`. The generic tracker interface is read-only — agents mutate their
-  tracker through provider-native tools — so the watcher writes through a GitHub-only host-side
-  path. Enabling it on another tracker logs a missing-repo error on each conflict return instead of
-  moving the issue.
+- Requires `tracker.kind: github` or `tracker.kind: linear`. The generic tracker interface is
+  read-only — agents mutate their tracker through provider-native tools — so the watcher writes
+  through its own host-side path for each of those trackers. Enabling it on another tracker logs an
+  unsupported-tracker error on each conflict return instead of moving the issue.
 - The pull request is resolved by running `gh pr view` inside the issue workspace, so the `gh` CLI
   must be installed and authenticated for the user running Symphony. Issues whose workspace no
   longer exists are skipped.
@@ -408,6 +408,21 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
+
+## Rendering a prompt for an interactive session
+
+To reproduce a dispatch by hand (for example, to debug sandbox or approval behavior in an
+interactive Codex session), render the first-turn prompt for one Linear issue:
+
+```bash
+mix compile && mix prompt.render --workflow path/to/WORKFLOW.md https://linear.app/acme/issue/ABC-123/title | pbcopy
+```
+
+The task resolves the Linear API key the same way the orchestrator does (`LINEAR_API_KEY` unless
+the workflow sets `tracker.api_key`), fetches the issue by identifier without
+the project or assignee routing filters, and prints only the rendered prompt to stdout. It does
+not start the orchestrator. The interactive session will not have Symphony's dynamic tracker tools
+or its configured approval and sandbox policy, so set those up yourself.
 
 ## Project Layout
 

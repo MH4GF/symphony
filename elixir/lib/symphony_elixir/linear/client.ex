@@ -104,6 +104,14 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @issue_id_by_identifier_query """
+  query SymphonyLinearIssueIdByIdentifier($id: String!) {
+    issue(id: $id) {
+      id
+    }
+  }
+  """
+
   @poll_project_variable "$projectSlug: String!, "
   @poll_project_filter "project: {slugId: {eq: $projectSlug}}, "
   @by_ids_project_filter ", project: {slugId: {eq: $projectSlug}}"
@@ -148,6 +156,23 @@ defmodule SymphonyElixir.Linear.Client do
              {:ok, assignee_filter} <- routing_assignee_filter() do
           do_fetch_issue_states(ids, tracker.project_slug, assignee_filter)
         end
+    end
+  end
+
+  @doc """
+  Fetches one issue by its human identifier (e.g. `ABC-123`) without the
+  workflow's project and assignee routing filters, for offline prompt rendering.
+  """
+  @spec fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier(identifier) when is_binary(identifier) do
+    with {:ok, _tracker} <- configured_tracker_for_read(),
+         {:ok, %{"data" => %{"issue" => %{"id" => issue_id}}}} <-
+           graphql(@issue_id_by_identifier_query, %{id: identifier}),
+         {:ok, [%Issue{} = issue]} <- do_fetch_issue_states([issue_id], nil, nil) do
+      {:ok, issue}
+    else
+      {:ok, _unexpected} -> {:error, {:linear_issue_not_found, identifier}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

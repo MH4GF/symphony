@@ -15,7 +15,7 @@ defmodule SymphonyElixir.ReviewWatcher do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitHub, Orchestrator, Tracker, Workspace}
+  alias SymphonyElixir.{Config, GitHub, Linear, Orchestrator, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @default_interval_ms 600_000
@@ -135,8 +135,9 @@ defmodule SymphonyElixir.ReviewWatcher do
   defp return_issue(%Issue{} = issue, pull_request, state, review_watch) do
     target_state = review_watch.on_conflict_state
 
-    with :ok <- writes_module().create_comment(issue.id, conflict_comment(pull_request, target_state)),
-         :ok <- writes_module().update_issue_state(issue.id, target_state) do
+    with {:ok, writes} <- writes_module(),
+         :ok <- writes.create_comment(issue.id, conflict_comment(pull_request, target_state)),
+         :ok <- writes.update_issue_state(issue.id, target_state) do
       Logger.info("Review watch returned conflicting issue #{issue_log_context(issue)} pr_number=#{pull_request.number} target_state=#{target_state}")
 
       %{state | returned_head_oids: Map.put(state.returned_head_oids, issue.id, pull_request.head_oid)}
@@ -177,9 +178,18 @@ defmodule SymphonyElixir.ReviewWatcher do
     Application.get_env(:symphony_elixir, :github_module, GitHub.CLI)
   end
 
+  # The tracker interface is read-only, so each tracker the watcher can return
+  # issues on brings its own host-side write path.
   defp writes_module do
-    Application.get_env(:symphony_elixir, :github_writes_module, GitHub.Writes)
+    case Application.get_env(:symphony_elixir, :review_watch_writes_module) do
+      nil -> writes_module_for_kind(Config.settings!().tracker.kind)
+      writes -> {:ok, writes}
+    end
   end
+
+  defp writes_module_for_kind("github"), do: {:ok, GitHub.Writes}
+  defp writes_module_for_kind("linear"), do: {:ok, Linear.Writes}
+  defp writes_module_for_kind(kind), do: {:error, {:review_watch_unsupported_tracker, kind}}
 
   defp issue_log_context(%Issue{id: id, identifier: identifier}) do
     "issue_id=#{inspect(id)} issue_identifier=#{inspect(identifier)}"
