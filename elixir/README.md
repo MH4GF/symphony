@@ -362,10 +362,10 @@ required labels, and when GitHub reports a conflict it comments on the issue and
 Notes:
 
 - Disabled by default. When enabled, `states` and `on_conflict_state` are required.
-- Requires `tracker.kind: github`. The generic tracker interface is read-only — agents mutate their
-  tracker through provider-native tools — so the watcher writes through a GitHub-only host-side
-  path. Enabling it on another tracker logs a missing-repo error on each conflict return instead of
-  moving the issue.
+- Requires `tracker.kind: github` or `tracker.kind: linear`. The generic tracker interface is
+  read-only — agents mutate their tracker through provider-native tools — so the watcher writes
+  through its own host-side path for each of those trackers. Enabling it on another tracker logs an
+  unsupported-tracker error on each conflict return instead of moving the issue.
 - The pull request is resolved by running `gh pr view` inside the issue workspace, so the `gh` CLI
   must be installed and authenticated for the user running Symphony. Issues whose workspace no
   longer exists are skipped.

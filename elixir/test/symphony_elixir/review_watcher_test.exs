@@ -46,6 +46,38 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     def update_issue_state(_issue_id, _state_name), do: {:error, :github_write_rejected}
   end
 
+  defmodule FakeLinearClient do
+    @moduledoc false
+
+    alias SymphonyElixir.Tracker.Issue
+
+    @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
+    def fetch_issues_by_states(_states) do
+      {:ok,
+       [
+         %Issue{
+           id: "lin-1",
+           identifier: "MT-1",
+           title: "title",
+           state: "In Review",
+           labels: ["symphony"],
+           dispatchable: true
+         }
+       ]}
+    end
+
+    @spec graphql(String.t(), map(), keyword()) :: {:ok, map()}
+    def graphql(query, variables, _opts) do
+      send(Application.fetch_env!(:symphony_elixir, :fake_github_recipient), {:linear_graphql, variables})
+
+      cond do
+        query =~ "commentCreate" -> {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+        query =~ "issueUpdate" -> {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+        true -> {:ok, %{"data" => %{"issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-in-progress"}]}}}}}}
+      end
+    end
+  end
+
   defmodule FakeGitHub do
     @moduledoc false
 
@@ -67,12 +99,12 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     File.mkdir_p!(workspace_root)
 
     Application.put_env(:symphony_elixir, :github_module, FakeGitHub)
-    Application.put_env(:symphony_elixir, :github_writes_module, FakeWrites)
+    Application.put_env(:symphony_elixir, :review_watch_writes_module, FakeWrites)
     Application.put_env(:symphony_elixir, :fake_github_recipient, self())
 
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :github_module)
-      Application.delete_env(:symphony_elixir, :github_writes_module)
+      Application.delete_env(:symphony_elixir, :review_watch_writes_module)
       Application.delete_env(:symphony_elixir, :fake_github_recipient)
       Application.delete_env(:symphony_elixir, :fake_github_result)
       File.rm_rf(workspace_root)
@@ -93,6 +125,56 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     assert_received {:writes_comment, "issue-1", body}
     assert body =~ "https://github.com/acme/repo/pull/7"
     assert_received {:writes_state_update, "issue-1", "In Progress"}
+  end
+
+  test "returns a conflicting review issue through Linear on a linear tracker", %{workspace_root: workspace_root} do
+    Application.delete_env(:symphony_elixir, :review_watch_writes_module)
+    previous_client = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    on_exit(fn ->
+      if is_nil(previous_client) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_required_labels: ["symphony"],
+      workspace_root: workspace_root,
+      review_watch_enabled: true,
+      review_watch_states: ["In Review"],
+      review_watch_on_conflict_state: "In Progress"
+    )
+
+    create_workspace!(workspace_root, "MT-1")
+    put_pull_request("CONFLICTING")
+
+    assert %ReviewWatcher.State{returned_head_oids: %{"lin-1" => "sha-1"}} =
+             ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
+
+    assert_received {:linear_graphql, %{issueId: "lin-1", body: body}}
+    assert body =~ "https://github.com/acme/repo/pull/7"
+    assert_received {:linear_graphql, %{issueId: "lin-1", stateName: "In Progress"}}
+    assert_received {:linear_graphql, %{issueId: "lin-1", stateId: "state-in-progress"}}
+  end
+
+  test "a tracker without a write path logs the return failure", %{workspace_root: workspace_root} do
+    Application.delete_env(:symphony_elixir, :review_watch_writes_module)
+    configure_review_watch(workspace_root)
+    create_workspace!(workspace_root, "MT-1")
+    put_issues([issue("issue-1", "MT-1", ["symphony"])])
+    put_pull_request("CONFLICTING")
+
+    log =
+      capture_log(fn ->
+        assert %ReviewWatcher.State{returned_head_oids: %{}} =
+                 ReviewWatcher.scan_for_test(%ReviewWatcher.State{})
+      end)
+
+    assert log =~ "review_watch_unsupported_tracker"
   end
 
   test "leaves a mergeable review issue alone", %{workspace_root: workspace_root} do
@@ -217,7 +299,7 @@ defmodule SymphonyElixir.ReviewWatcherTest do
     create_workspace!(workspace_root, "MT-1")
     put_issues([issue("issue-1", "MT-1", ["symphony"])])
     put_pull_request("CONFLICTING")
-    Application.put_env(:symphony_elixir, :github_writes_module, FailingWrites)
+    Application.put_env(:symphony_elixir, :review_watch_writes_module, FailingWrites)
 
     log =
       capture_log(fn ->
